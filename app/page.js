@@ -25,6 +25,7 @@ export default function Home() {
   const [runDist, setRunDist] = useState(0);
   const [runTime, setRunTime] = useState(0);
   const [riskCheck, setRiskCheck] = useState(null);
+  const [clubRisk, setClubRisk] = useState(null);
 
   function showMsg(text, type = 'info') {
     if (msgTimer.current) clearTimeout(msgTimer.current);
@@ -168,6 +169,17 @@ export default function Home() {
     } catch {}
   }
 
+  async function checkClubRisk() {
+    try {
+      const res = await fetch('/api/check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'club', activityStartTime: '18:00', activityEndTime: '18:30' }),
+      });
+      if (res.ok) setClubRisk(await res.json());
+    } catch {}
+  }
+
   // ===== Sign =====
   async function handleSign(type) {
     setBtnLoad(`sign-${type}`, true);
@@ -247,7 +259,7 @@ export default function Home() {
 
   // ===== Effects =====
   useEffect(() => {
-    if (session && tab === 'club') { loadActivities(); loadRushStatus(); }
+    if (session && tab === 'club') { loadActivities(); loadRushStatus(); checkClubRisk(); }
     if (session && tab === 'mine') loadMyActivities();
     if (session && tab === 'run') loadRoutes();
   }, [tab, session]);
@@ -406,7 +418,7 @@ export default function Home() {
               ))}
             </div>
 
-            <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
               <button style={styles.btnGreen} onClick={() => handleSign('in')} disabled={btnLoading['sign-in']}>
                 {btnLoading['sign-in'] ? '...' : '签到'}
               </button>
@@ -417,6 +429,19 @@ export default function Home() {
                 {timerActive ? `签退 ${timerCountdown}` : '签到+定时签退'}
               </button>
             </div>
+
+            {clubRisk && (
+              <div style={{ marginBottom: 12 }}>
+                {clubRisk.advice?.map((a, i) => (
+                  <div key={i} style={{ fontSize: 12, marginTop: 2, color: a.level === 'ok' ? '#43a047' : a.level === 'error' ? '#c62828' : a.level === 'warn' ? '#e65100' : '#1565c0' }}>
+                    {a.level === 'ok' ? '✓' : a.level === 'error' ? '✗' : a.level === 'warn' ? '⚠' : 'ℹ'} {a.msg}
+                  </div>
+                ))}
+                {clubRisk.frequency && !clubRisk.frequency.should && (
+                  <div style={{ fontSize: 12, color: '#1565c0', marginTop: 2 }}>ℹ {clubRisk.frequency.reason}</div>
+                )}
+              </div>
+            )}
 
             {activities.length === 0 && <p style={{ textAlign: 'center', color: '#aaa', fontSize: 13 }}>暂无活动</p>}
             {activities.map(a => {

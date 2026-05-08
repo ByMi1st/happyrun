@@ -83,6 +83,72 @@ export function getSignBackDelay(activityDurationMinutes = 30) {
   return (minDelay + Math.floor(Math.random() * (maxDelay - minDelay))) * 60 * 1000;
 }
 
+// ===== Club Sign-in Risk Assessment =====
+
+export function assessClubSignRisk(signInTime, signBackTime) {
+  const issues = [];
+  let score = 100;
+
+  if (signInTime && signBackTime) {
+    const durationMs = new Date(signBackTime).getTime() - new Date(signInTime).getTime();
+    const durationMin = durationMs / 60000;
+
+    if (durationMin < 5) { score -= 40; issues.push(`签到-签退间隔仅${durationMin.toFixed(0)}分钟，极易被判无效`); }
+    else if (durationMin < 15) { score -= 20; issues.push(`签到-签退间隔${durationMin.toFixed(0)}分钟，偏短`); }
+  }
+
+  return { score: Math.max(0, score), issues };
+}
+
+export function getClubSignAdvice(activityStartTime, activityEndTime) {
+  const advice = [];
+  const hour = getChinaHour();
+  const now = new Date();
+
+  if (activityStartTime) {
+    const [startH, startM] = activityStartTime.split(':').map(Number);
+    const [endH, endM] = (activityEndTime || '').split(':').map(Number);
+
+    if (hour < startH || (hour === startH && now.getMinutes() < startM)) {
+      advice.push({ level: 'warn', msg: `活动${activityStartTime}才开始，现在签到会失败` });
+    }
+
+    if (endH && (hour > endH || (hour === endH && now.getMinutes() > endM))) {
+      advice.push({ level: 'error', msg: `活动已在${activityEndTime}结束，签到窗口已关闭` });
+    }
+
+    if (hour === startH) {
+      const delayMin = 1 + Math.floor(Math.random() * 4);
+      advice.push({ level: 'info', msg: `建议等${delayMin}分钟后再签到，避免精确踩点` });
+    }
+
+    if (endH && endM) {
+      const actDuration = (endH - startH) * 60 + (endM - startM);
+      const idealSignBack = Math.floor(actDuration * 0.73) + Math.floor(Math.random() * Math.floor(actDuration * 0.22));
+      advice.push({ level: 'info', msg: `建议签到后${idealSignBack}分钟再签退（活动时长${actDuration}分钟）` });
+    }
+  }
+
+  if (advice.length === 0) {
+    advice.push({ level: 'ok', msg: '俱乐部签到参数正常' });
+  }
+
+  return advice;
+}
+
+// ===== Club Frequency Control =====
+
+export function shouldJoinClubToday(recentClubRecords, targetPerWeek = 3) {
+  const oneWeekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const thisWeekCount = recentClubRecords.filter(r => {
+    const d = new Date(r.yymmdd || r.startTime);
+    return d.getTime() > oneWeekAgo;
+  }).length;
+
+  if (thisWeekCount >= targetPerWeek) return { should: false, reason: `本周已参加${thisWeekCount}次俱乐部，已达标` };
+  return { should: true, remaining: targetPerWeek - thisWeekCount };
+}
+
 // ===== Frequency Control =====
 
 export function shouldRunToday(recentRecords, targetPerWeek = 4) {
