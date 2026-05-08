@@ -230,7 +230,7 @@ export default function Home() {
   // ===== Schedule =====
   async function scheduleActivity(activity) {
     try {
-      const mmdd = activity.mmdd || new Date().toISOString().slice(5, 10);
+      const mmdd = activity.mmdd || selectedDate.slice(5);
       const data = await api('/api/schedule', { method: 'POST', body: JSON.stringify({ activity: { ...activity, mmdd } }) });
       if (data.error) throw new Error(data.error);
       showMsg(`定时签到：${mmdd} ${data.signInTimeStr} → ${data.signBackTimeStr} 签退`, 'success', 6000);

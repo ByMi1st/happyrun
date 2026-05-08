@@ -34,7 +34,8 @@ export function scheduleForActivity(activity) {
   const [endH, endM] = (endTime || '').split(':').map(Number);
 
   const signInDelay = 60 + Math.floor(Math.random() * 180);
-  const targetDate = new Date(year, month - 1, day, startH, startM, 0);
+  const targetStr = `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}T${String(startH).padStart(2,'0')}:${String(startM).padStart(2,'0')}:00+08:00`;
+  const targetDate = new Date(targetStr);
   const signInTime = new Date(targetDate.getTime() + signInDelay * 1000);
 
   const delayMs = signInTime.getTime() - Date.now();
