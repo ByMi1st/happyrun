@@ -16,6 +16,9 @@ export default function Home() {
   const [timerActive, setTimerActive] = useState(false);
   const [timerCountdown, setTimerCountdown] = useState('');
   const timerRef = useRef(null);
+  const [scheduleTimer, setScheduleTimer] = useState(null);
+  const [scheduleCountdown, setScheduleCountdown] = useState('');
+  const scheduleRef = useRef(null);
   const [routes, setRoutes] = useState([]);
   const [selectedRoute, setSelectedRoute] = useState('');
   const [rushStatus, setRushStatus] = useState([]);
@@ -27,10 +30,10 @@ export default function Home() {
   const [riskCheck, setRiskCheck] = useState(null);
   const [clubRisk, setClubRisk] = useState(null);
 
-  function showMsg(text, type = 'info') {
+  function showMsg(text, type = 'info', duration = 4000) {
     if (msgTimer.current) clearTimeout(msgTimer.current);
     setMsg({ text, type });
-    msgTimer.current = setTimeout(() => setMsg(null), 4000);
+    msgTimer.current = setTimeout(() => setMsg(null), duration);
   }
 
   function setBtnLoad(key, val) {
@@ -134,12 +137,14 @@ export default function Home() {
 
       const result = data.result;
       if (result?.status === '0' || result?.status === 0) {
-        showMsg(result.message || '操作失败', 'error');
+        showMsg(result.message || '操作失败', 'error', 8000);
+      } else if (result?.message) {
+        showMsg(result.message, 'success');
       } else {
-        showMsg(type === 'join' ? `报名成功「${activity.activityName}」` : '取消报名成功', 'success');
+        showMsg(type === 'join' ? `报名成功「${activity.activityName}」` : `已取消报名「${activity.activityName}」`, 'success');
       }
       await Promise.all([loadActivities(), loadMyActivities()]);
-    } catch (e) { showMsg(e.message, 'error'); }
+    } catch (e) { showMsg(e.message, 'error', 8000); }
     setBtnLoad(key, false);
   }
 
@@ -257,6 +262,79 @@ export default function Home() {
     } catch (e) { showMsg(`定时签退失败：${e.message}`, 'error'); }
   }
 
+  function handleScheduleSign() {
+    if (scheduleTimer) {
+      clearInterval(scheduleRef.current);
+      setScheduleTimer(null);
+      setScheduleCountdown('');
+      showMsg('已取消定时签到', 'info');
+      return;
+    }
+
+    const now = new Date();
+    const h = now.getHours(), m = now.getMinutes();
+    const defaultTime = h < 18 ? '18:01' : `${h}:${String(m + 1).padStart(2, '0')}`;
+    const input = prompt(`设定签到时间（格式 HH:MM，如 18:01）`, defaultTime);
+    if (!input) return;
+
+    const [targetH, targetM] = input.split(':').map(Number);
+    if (isNaN(targetH) || isNaN(targetM)) { showMsg('时间格式错误', 'error'); return; }
+
+    const target = new Date();
+    target.setHours(targetH, targetM, 0, 0);
+    if (target.getTime() <= Date.now()) {
+      showMsg('目标时间已过，请设置未来的时间', 'error');
+      return;
+    }
+
+    setScheduleTimer({ targetH, targetM });
+    showMsg(`定时签到已设置：${input} 自动签到 → 自动签退`, 'success');
+
+    scheduleRef.current = setInterval(async () => {
+      const remaining = Math.max(0, Math.round((target.getTime() - Date.now()) / 1000));
+      if (remaining <= 0) {
+        clearInterval(scheduleRef.current);
+        setScheduleCountdown('签到中...');
+
+        try {
+          const res = await fetch('/api/club', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'signIn' }),
+          });
+          const data = await res.json();
+          if (data.result?.success) {
+            showMsg(`定时签到成功！活动：${data.result.activityName}，等待自动签退...`, 'success', 8000);
+
+            const delay = (22 + Math.floor(Math.random() * 6)) * 60;
+            const endTime = Date.now() + delay * 1000;
+            setTimerActive(true);
+            timerRef.current = setInterval(() => {
+              const rem = Math.max(0, Math.round((endTime - Date.now()) / 1000));
+              if (rem <= 0) {
+                clearInterval(timerRef.current);
+                setTimerActive(false);
+                setTimerCountdown('');
+                executeTimedSignBack();
+              } else {
+                setTimerCountdown(`${Math.floor(rem / 60)}:${String(rem % 60).padStart(2, '0')}`);
+              }
+            }, 1000);
+          } else {
+            showMsg(`定时签到失败：${data.result?.message || '当前无可签到活动'}`, 'error', 8000);
+          }
+        } catch (e) { showMsg(`定时签到异常：${e.message}`, 'error'); }
+
+        setScheduleTimer(null);
+        setScheduleCountdown('');
+      } else {
+        const mm = Math.floor(remaining / 60);
+        const ss = remaining % 60;
+        setScheduleCountdown(`${mm}:${String(ss).padStart(2, '0')}`);
+      }
+    }, 1000);
+  }
+
   // ===== Effects =====
   useEffect(() => {
     if (session && tab === 'club') { loadActivities(); loadRushStatus(); checkClubRisk(); }
@@ -265,7 +343,10 @@ export default function Home() {
   }, [tab, session]);
 
   useEffect(() => {
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (scheduleRef.current) clearInterval(scheduleRef.current);
+    };
   }, []);
 
   // ===== Helpers =====
@@ -418,7 +499,7 @@ export default function Home() {
               ))}
             </div>
 
-            <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+            <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
               <button style={styles.btnGreen} onClick={() => handleSign('in')} disabled={btnLoading['sign-in']}>
                 {btnLoading['sign-in'] ? '...' : '签到'}
               </button>
@@ -426,7 +507,17 @@ export default function Home() {
                 {btnLoading['sign-back'] ? '...' : '签退'}
               </button>
               <button style={styles.btnBlue} onClick={handleTimedSign} disabled={btnLoading['sign-timed'] || timerActive}>
-                {timerActive ? `签退 ${timerCountdown}` : '签到+定时签退'}
+                {timerActive ? `签退 ${timerCountdown}` : '签到+自动签退'}
+              </button>
+            </div>
+            <div style={{ marginBottom: 10 }}>
+              <button
+                style={{ ...styles.btnSchedule, ...(scheduleTimer ? { background: '#c62828' } : {}) }}
+                onClick={handleScheduleSign}
+              >
+                {scheduleTimer
+                  ? (scheduleCountdown === '签到中...' ? '签到中...' : `取消定时 (${scheduleCountdown})`)
+                  : '定时签到（设定时间自动签到+签退）'}
               </button>
             </div>
 
@@ -544,6 +635,7 @@ const styles = {
   btnGreen: { flex: 1, padding: '9px 6px', background: '#43a047', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, cursor: 'pointer', fontWeight: 500 },
   btnOrange: { flex: 1, padding: '9px 6px', background: '#ff9800', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, cursor: 'pointer', fontWeight: 500 },
   btnBlue: { flex: 1.5, padding: '9px 6px', background: '#1565c0', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, cursor: 'pointer', fontWeight: 500 },
+  btnSchedule: { width: '100%', padding: '9px 6px', background: '#7b1fa2', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, cursor: 'pointer', fontWeight: 500 },
   actCard: { display: 'flex', alignItems: 'center', gap: 10, padding: '12px 0', borderBottom: '1px solid #f5f5f5' },
   actMeta: { fontSize: 12, color: '#888', marginTop: 2 },
   btnJoin: { padding: '7px 14px', background: '#ff8c00', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, cursor: 'pointer', fontWeight: 500, whiteSpace: 'nowrap' },
