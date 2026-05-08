@@ -257,9 +257,13 @@ export default function Home() {
   }
 
   function getActBtn(a) {
-    if (a.optionStatus === '4') return { label: '已报名', cls: 'btn-sm', style: { background: 'rgba(0,122,255,.08)', color: '#007AFF' }, canCancel: true };
-    if (a.fullActivity === '1') return { label: '已满', cls: 'btn-sm', style: { background: 'rgba(0,0,0,.04)', color: '#999' }, canCancel: false };
-    if (a.optionStatus === '6') return { label: '报名', cls: 'btn-sm', style: { background: '#007AFF', color: '#fff' }, canCancel: false };
+    const opt = a.optionStatus;
+    const isFull = a.fullActivity === '1';
+    const isJoined = opt === '1' || opt === '4';
+    const canJoin = !isFull && (opt === '3' || opt === '6');
+    if (isJoined) return { label: '已报名', cls: 'btn-sm', style: { background: 'rgba(0,122,255,.08)', color: '#007AFF' }, canCancel: true };
+    if (isFull) return { label: '已满', cls: 'btn-sm', style: { background: 'rgba(0,0,0,.04)', color: '#999' }, canCancel: false };
+    if (canJoin) return { label: '报名', cls: 'btn-sm', style: { background: '#007AFF', color: '#fff' }, canCancel: false };
     return { label: '-', cls: 'btn-sm', style: { background: 'rgba(0,0,0,.04)', color: '#999' }, canCancel: false };
   }
 
@@ -430,6 +434,7 @@ export default function Home() {
               {myActs.slice(0, 15).map((a, i) => {
                 const isScheduled = scheduledTasks.some(t => t.clubActivityId === a.clubActivityId);
                 const isPast = a.activityStatus === '3';
+                const isOngoing = a.activityStatus === '2';
                 return (
                   <div key={a.signUpId || i} className="act-row">
                     <div style={{ flex: 1 }}>
