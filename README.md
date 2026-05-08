@@ -1,0 +1,171 @@
+# HappyRun
+
+Unirun 校园跑 & 俱乐部自动化工具。基于逆向分析构建，提供 Web UI 和 CLI 两种使用方式。
+
+> 仅供学习交流使用，请勿用于违反校规的行为。
+
+## 功能
+
+### 校园跑
+- 一键提交跑步记录（自动生成合规轨迹）
+- 自定义距离/时间（滑块调节，实时配速反馈）
+- 自定义路线模板（保存真实路线，重复使用加随机偏移）
+- 内置风控检测（配速安全区间、时段建议、频率控制、轨迹质量评分）
+
+### 俱乐部
+- 查看活动列表（按日期切换）
+- 一键报名 / 取消报名
+- 抢报（活动满员时定时高频尝试）
+- 签到 / 签退 / 签到+定时自动签退
+
+### 风控对策
+- 设备指纹随机化（每次登录随机品牌/型号/系统版本）
+- GPS 坐标随机偏移（签到坐标 ±15m 抖动）
+- 轨迹真实性增强（随机时间间隔、停顿、惯性速度、连续抖动）
+- 安全时段检测（建议仅在 6-8 / 17-21 点提交）
+- 配速安全区间（实时计算服务端配速值，标记是否越界）
+- 频率控制（每周限跑次数建议）
+- 轨迹质量评分（提交后显示检测风险分数）
+
+## 项目结构
+
+```
+happyrun/
+├── app/                        # Next.js App Router
+│   ├── page.js                 # 前端页面（React SPA）
+│   ├── layout.js               # 布局
+│   └── api/                    # API Routes
+│       ├── login/route.js      # 登录
+│       ├── run/route.js        # 校园跑
+│       ├── club/route.js       # 俱乐部 & 签到
+│       ├── routes/route.js     # 路线模板 CRUD
+│       ├── rush/route.js       # 抢报
+│       ├── check/route.js      # 风控检查
+│       └── session.js          # Session 恢复
+├── src/
+│   ├── lib/
+│   │   ├── auth.js             # 登录认证 & Token 管理
+│   │   ├── client.js           # HTTP 客户端（自动签名）
+│   │   ├── sign.js             # 请求签名算法（MD5）
+│   │   ├── run.js              # 校园跑业务逻辑
+│   │   ├── club.js             # 俱乐部 & 签到
+│   │   ├── rush.js             # 抢报调度
+│   │   ├── track-generator.js  # GPS 轨迹生成
+│   │   ├── track-template.js   # 路线模板管理
+│   │   ├── geo.js              # 几何工具
+│   │   └── anti-detection.js   # 风控对策模块
+│   ├── utils/
+│   │   └── date.js             # 日期工具
+│   ├── config.js               # 配置
+│   └── index.js                # CLI 入口
+├── data/routes/                # 路线模板存储
+├── docs/
+│   └── ANTI_DETECTION.md       # 风控策略文档
+├── .env.example                # 环境变量示例
+├── .gitignore
+├── next.config.js
+└── package.json
+```
+
+## 快速开始
+
+### 环境要求
+
+- Node.js >= 18
+- npm
+
+### 安装
+
+```bash
+git clone https://github.com/yourname/happyrun.git
+cd happyrun
+npm install
+```
+
+### 配置
+
+```bash
+cp .env.example .env
+# 默认值即可使用，无需修改
+```
+
+### 启动 Web UI
+
+```bash
+npm run dev
+# 打开 http://localhost:3000
+```
+
+### 使用 CLI
+
+```bash
+npm run cli
+```
+
+## 部署
+
+### Vercel（推荐）
+
+```bash
+npm i -g vercel
+vercel
+```
+
+注意：部署到 Vercel 后需在项目设置中添加环境变量 `APPKEY` 和 `APPSECRET`。
+
+### Docker
+
+```dockerfile
+FROM node:18-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm install
+COPY . .
+RUN npm run build
+EXPOSE 3000
+CMD ["npm", "start"]
+```
+
+### 自建服务器
+
+```bash
+npm run build
+npm start
+# 或使用 PM2
+pm2 start npm --name happyrun -- start
+```
+
+## AI Agent 辅助搭建 Prompt
+
+如果你使用 Cursor、Trae、Claude Code 等 AI 编码工具，可以用以下 prompt 快速理解和修改项目：
+
+```
+这是一个基于 Next.js 的校园跑自动化工具（HappyRun），请帮我：
+
+1. 项目结构：Next.js App Router，前端在 app/page.js（React SPA），后端 API 在 app/api/，核心逻辑在 src/lib/
+2. 核心模块：
+   - src/lib/sign.js: Unirun API 请求签名算法（MD5）
+   - src/lib/client.js: axios 封装，自动签名 + token 注入
+   - src/lib/auth.js: 登录（密码 MD5 后发送）
+   - src/lib/track-generator.js: GPS 轨迹生成（多边形内随机游走）
+   - src/lib/anti-detection.js: 风控模块（配速/时段/频率/轨迹评分）
+   - src/lib/club.js: 俱乐部报名 + 签到签退
+3. API 基础：
+   - 目标服务器: https://run-lb.tanmasports.com/
+   - 认证: headers 带 appKey + token + sign
+   - 签名算法: 排序参数拼接 + APPKEY + APPSECRET + body → MD5 大写
+   - 响应格式: { code: 10000, msg: "成功", response: <data> }
+4. 关键注意：
+   - 不要调用 v1/push/startRun（会触发服务端锁）
+   - 密码需要先 MD5 再发送
+   - 学校围栏坐标格式: "lng-lat,lng-lat,..."（逗号分隔点，连字符分隔经纬度）
+   - optionStatus: "6"=可报名, "4"=已报名, "7"=已满
+```
+
+## 免责声明
+
+本项目仅供技术学习和研究目的。使用者应自行承担使用风险，开发者不对任何因使用本工具导致的后果负责。
+
+## License
+
+MIT
