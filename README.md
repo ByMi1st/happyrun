@@ -19,13 +19,29 @@ Unirun 校园跑 & 俱乐部自动化工具。基于逆向分析构建，提供 
 - 签到 / 签退 / 签到+定时自动签退
 
 ### 风控对策
-- 设备指纹随机化（每次登录随机品牌/型号/系统版本）
-- GPS 坐标随机偏移（签到坐标 ±15m 抖动）
-- 轨迹真实性增强（随机时间间隔、停顿、惯性速度、连续抖动）
-- 安全时段检测（建议仅在 6-8 / 17-21 点提交）
-- 配速安全区间（实时计算服务端配速值，标记是否越界）
-- 频率控制（每周限跑次数建议）
-- 轨迹质量评分（提交后显示检测风险分数）
+
+基于 APK 逆向分析，针对服务端/客户端检测机制实现对抗。详见 **[风控策略文档](docs/ANTI_DETECTION.md)**。
+
+#### 校园跑对抗
+| 检测风险 | 对抗措施 | 代码 |
+|----------|----------|------|
+| 配速异常 (`boyMaxSpeed/MinSpeed`) | 安全区间校验 + 前端实时反馈 | `anti-detection.js: calculateSafePace()` |
+| 轨迹太均匀 (机器特征) | 随机间隔(3-6s) + 停顿(1-3次) + 惯性速度 | `track-generator.js` |
+| GPS 抖动不连续 | 自相关噪声 (0.7衰减 + 0.3新随机) | `track-generator.js` |
+| 校区围栏 (80%点在内) | 全部点在多边形内生成，碰壁U形转弯 | `track-generator.js` + `geo.js` |
+| `startRun` 触发状态锁 | 不调用，直接提交 | `run.js` |
+| `suspectedStatus` 后置审核 | 轨迹质量自检评分 | `anti-detection.js: scoreTrack()` |
+| 提交时段/频率异常 | 安全时段(6-8/17-21点) + 每周3-4次 | `anti-detection.js` |
+| 设备指纹相同 | 每次登录随机品牌/机型/版本 | `config.js: randomDevice()` |
+
+#### 俱乐部对抗
+| 检测风险 | 对抗措施 | 代码 |
+|----------|----------|------|
+| GeoFence 围栏 (客户端阻断) | 绕过客户端，直接调 API | `club.js: signIn/signBack` |
+| 签到坐标固定 | 每次 ±15m GPS 偏移 | `club.js` → `anti-detection.js: jitterCoordinate()` |
+| 精确踩点签到 | 延迟 1-5 分钟 | `anti-detection.js: getSignInDelay()` |
+| 秒退 (<5min) | 延迟 73%-95% 活动时长 | `anti-detection.js: getSignBackDelay()` |
+| 连续旷课惩罚 | 频率控制 + 旷课提醒 | `anti-detection.js: shouldJoinClubToday()` |
 
 ## 项目结构
 
