@@ -137,10 +137,16 @@ export default function Home() {
       const result = data.result;
       if (result?.status === '0' || result?.status === 0) {
         showMsg(result.message || '操作失败', 'error', 8000);
-      } else if (result?.message) {
-        showMsg(result.message, 'success');
+      } else if (type === 'join') {
+        showMsg(`报名成功「${activity.activityName}」`, 'success');
+        await Promise.all([loadActivities(), loadMyActivities()]);
+        if (confirm(`报名成功！是否为该活动设置定时签到？\n${activity.activityName}\n时间: ${activity.startTime}-${activity.endTime}`)) {
+          await scheduleActivity(activity);
+        }
+        setBtnLoad(key, false);
+        return;
       } else {
-        showMsg(type === 'join' ? `报名成功「${activity.activityName}」` : `已取消报名「${activity.activityName}」`, 'success');
+        showMsg(`已取消报名「${activity.activityName}」`, 'success');
       }
       await Promise.all([loadActivities(), loadMyActivities()]);
     } catch (e) { showMsg(e.message, 'error', 8000); }
@@ -261,43 +267,18 @@ export default function Home() {
     } catch (e) { showMsg(`定时签退失败：${e.message}`, 'error'); }
   }
 
-  async function handleScheduleSign() {
-    const now = new Date();
-    const h = now.getHours(), m = now.getMinutes();
-    const defaultDate = now.toISOString().slice(0, 10);
-    const defaultTime = h < 18 ? '18:01' : `${h}:${String(Math.min(m + 2, 59)).padStart(2, '0')}`;
-
-    const input = prompt(
-      `设定签到时间\n格式: YYYY-MM-DD HH:MM（如 ${defaultDate} ${defaultTime}）\n或只填 HH:MM 表示今天`,
-      `${defaultDate} ${defaultTime}`
-    );
-    if (!input) return;
-
-    let targetTime;
-    if (/^\d{2}:\d{2}$/.test(input.trim())) {
-      targetTime = `${defaultDate}T${input.trim()}:00`;
-    } else if (/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}$/.test(input.trim())) {
-      const [d, t] = input.trim().split(/\s+/);
-      targetTime = `${d}T${t}:00`;
-    } else {
-      showMsg('时间格式错误，请使用 HH:MM 或 YYYY-MM-DD HH:MM', 'error');
-      return;
-    }
-
-    if (new Date(targetTime).getTime() <= Date.now()) {
-      showMsg('目标时间已过，请设置未来的时间', 'error');
-      return;
-    }
-
+  async function scheduleActivity(activity) {
     try {
+      const today = new Date().toISOString().slice(5, 10);
+      const mmdd = activity.mmdd || today;
       const res = await fetch('/api/schedule', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ targetTime }),
+        body: JSON.stringify({ activity: { ...activity, mmdd } }),
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-      showMsg(`定时签到已创建：${input.trim()} → 自动签到 → 自动签退`, 'success', 6000);
+      showMsg(`已设置定时签到：${mmdd} ${data.signInTimeStr || ''} 签到 → ${data.signBackTimeStr || ''} 签退`, 'success', 6000);
       loadScheduledTasks();
     } catch (e) { showMsg(e.message, 'error'); }
   }
@@ -320,7 +301,7 @@ export default function Home() {
   // ===== Effects =====
   useEffect(() => {
     if (session && tab === 'club') { loadActivities(); loadRushStatus(); checkClubRisk(); loadScheduledTasks(); }
-    if (session && tab === 'mine') loadMyActivities();
+    if (session && tab === 'mine') { loadMyActivities(); loadScheduledTasks(); }
     if (session && tab === 'run') loadRoutes();
   }, [tab, session]);
 
@@ -492,45 +473,45 @@ export default function Home() {
               </button>
             </div>
             <div style={{ marginBottom: 10 }}>
-              <button style={styles.btnSchedule} onClick={handleScheduleSign}>
-                定时签到（设定时间自动签到+签退）
-              </button>
-            </div>
-
-            {scheduledTasks.length > 0 && (
-              <div style={{ marginBottom: 12 }}>
-                {scheduledTasks.map(t => {
-                  const statusMap = {
-                    waiting: '⏳ 等待中',
-                    signing_in: '🔄 签到中...',
-                    signed_in: '✓ 已签到，等待签退',
-                    signing_back: '🔄 签退中...',
-                    completed: '✓ 已完成',
-                    failed: '✗ 失败',
-                    back_failed: '⚠ 签退失败',
-                  };
-                  const timeStr = new Date(t.targetTime).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
-                  const isDone = ['completed', 'failed', 'back_failed'].includes(t.status);
-                  return (
-                    <div key={t.id} style={{ ...styles.taskCard, opacity: isDone ? 0.6 : 1 }}>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 13, fontWeight: 500 }}>
-                          {timeStr} {t.activityName && `· ${t.activityName}`}
+              {scheduledTasks.length > 0 && (
+                <div style={{ marginBottom: 8 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 6, color: '#555' }}>定时任务</div>
+                  {scheduledTasks.map(t => {
+                    const statusMap = {
+                      waiting: '⏳ 等待签到',
+                      signing_in: '🔄 签到中...',
+                      signed_in: '✅ 已签到，等待签退',
+                      signing_back: '🔄 签退中...',
+                      completed: '✅ 完成',
+                      failed: '❌ 签到失败',
+                      back_failed: '⚠️ 签退失败',
+                    };
+                    const isDone = ['completed', 'failed', 'back_failed'].includes(t.status);
+                    return (
+                      <div key={t.id} style={{ ...styles.taskCard, opacity: isDone ? 0.5 : 1 }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 13, fontWeight: 500 }}>
+                            {t.date} {t.activityName}
+                          </div>
+                          <div style={{ fontSize: 11, color: '#888', marginTop: 1 }}>
+                            签到 {t.signInAt ? new Date(t.signInAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : t.startTime}
+                            {' → 签退 '}
+                            {t.signBackAt ? new Date(t.signBackAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '~'}
+                          </div>
+                          <div style={{ fontSize: 11, color: t.status.includes('fail') ? '#c62828' : '#43a047', marginTop: 1 }}>
+                            {statusMap[t.status] || t.status}
+                            {t.signInResult && t.status === 'failed' ? ` - ${t.signInResult}` : ''}
+                          </div>
                         </div>
-                        <div style={{ fontSize: 12, color: t.status === 'failed' || t.status === 'back_failed' ? '#c62828' : '#666', marginTop: 2 }}>
-                          {statusMap[t.status] || t.status}
-                          {t.signInResult && t.status === 'failed' && ` - ${t.signInResult}`}
-                          {t.signBackResult && ` - ${t.signBackResult}`}
-                        </div>
+                        {!isDone && (
+                          <button style={styles.btnTaskCancel} onClick={() => cancelSchedule(t.id)}>取消</button>
+                        )}
                       </div>
-                      {!isDone && (
-                        <button style={styles.btnTaskCancel} onClick={() => cancelSchedule(t.id)}>取消</button>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+                    );
+                  })}
+                </div>
+              )}
+            </div>
 
             {clubRisk && (
               <div style={{ marginBottom: 12 }}>
@@ -595,21 +576,28 @@ export default function Home() {
         {tab === 'mine' && (
           <div style={styles.section}>
             {myActs.length === 0 && <p style={{ textAlign: 'center', color: '#aaa', fontSize: 13 }}>暂无记录</p>}
-            {myActs.slice(0, 15).map((a, i) => (
-              <div key={a.signUpId || i} style={styles.actCard}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 500, fontSize: 14 }}>{a.activityName}</div>
-                  <div style={styles.actMeta}>{a.mmdd} {a.startTime}-{a.endTime}</div>
+            {myActs.slice(0, 15).map((a, i) => {
+              const isScheduled = scheduledTasks.some(t => t.clubActivityId === a.clubActivityId);
+              const isPast = a.activityStatus === '3';
+              return (
+                <div key={a.signUpId || i} style={styles.actCard}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 500, fontSize: 14 }}>{a.activityName}</div>
+                    <div style={styles.actMeta}>{a.mmdd} {a.startTime}-{a.endTime}</div>
+                  </div>
+                  {isPast ? (
+                    <span style={{
+                      fontSize: 12, padding: '3px 8px', borderRadius: 4,
+                      background: '#e8f5e9', color: '#2e7d32',
+                    }}>已完成</span>
+                  ) : isScheduled ? (
+                    <span style={{ fontSize: 12, padding: '3px 8px', borderRadius: 4, background: '#e3f2fd', color: '#1565c0' }}>已定时</span>
+                  ) : (
+                    <button style={styles.btnScheduleSm} onClick={() => scheduleActivity(a)}>定时签到</button>
+                  )}
                 </div>
-                <span style={{
-                  fontSize: 12, padding: '3px 8px', borderRadius: 4,
-                  background: a.activityStatus === '3' ? '#e8f5e9' : '#fff3e0',
-                  color: a.activityStatus === '3' ? '#2e7d32' : '#e65100',
-                }}>
-                  {a.activityStatus === '3' ? '已完成' : a.activityStatus === '2' ? '进行中' : '待开始'}
-                </span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -647,6 +635,7 @@ const styles = {
   btnOrange: { flex: 1, padding: '9px 6px', background: '#ff9800', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, cursor: 'pointer', fontWeight: 500 },
   btnBlue: { flex: 1.5, padding: '9px 6px', background: '#1565c0', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, cursor: 'pointer', fontWeight: 500 },
   btnSchedule: { width: '100%', padding: '9px 6px', background: '#7b1fa2', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, cursor: 'pointer', fontWeight: 500 },
+  btnScheduleSm: { padding: '5px 10px', background: '#7b1fa2', color: '#fff', border: 'none', borderRadius: 6, fontSize: 11, cursor: 'pointer', fontWeight: 500, whiteSpace: 'nowrap' },
   taskCard: { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: '#f5f5f5', borderRadius: 8, marginBottom: 6 },
   btnTaskCancel: { padding: '4px 10px', background: '#fff', color: '#c62828', border: '1px solid #c62828', borderRadius: 6, fontSize: 11, cursor: 'pointer', whiteSpace: 'nowrap' },
   actCard: { display: 'flex', alignItems: 'center', gap: 10, padding: '12px 0', borderBottom: '1px solid #f5f5f5' },

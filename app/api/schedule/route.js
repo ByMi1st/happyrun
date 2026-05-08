@@ -1,5 +1,5 @@
 import { ensureSession } from '../session.js';
-import { scheduleSignIn, getScheduledTasks, cancelScheduledTask } from '../../../src/lib/schedule.js';
+import { scheduleForActivity, getScheduledTasks, cancelScheduledTask } from '../../../src/lib/schedule.js';
 
 export async function GET() {
   try {
@@ -16,11 +16,11 @@ export async function POST(request) {
     const session = await ensureSession();
     if (!session) return Response.json({ error: '未登录' }, { status: 401 });
 
-    const { targetTime, activityName } = await request.json();
-    if (!targetTime) return Response.json({ error: '缺少目标时间' }, { status: 400 });
-
-    const id = `sign-${Date.now()}`;
-    const result = scheduleSignIn(id, targetTime, activityName || '');
+    const { activity } = await request.json();
+    if (!activity || !activity.clubActivityId) {
+      return Response.json({ error: '缺少活动信息' }, { status: 400 });
+    }
+    const result = scheduleForActivity(activity);
     return Response.json(result);
   } catch (e) {
     return Response.json({ error: e.message }, { status: 500 });

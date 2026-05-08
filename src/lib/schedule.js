@@ -1,5 +1,5 @@
 import { getSignInInfo, signIn, signBack } from './club.js';
-import { getSignInDelay, getSignBackDelay } from './anti-detection.js';
+import { getSignBackDelay } from './anti-detection.js';
 
 let scheduledTasks = new Map();
 
@@ -20,33 +20,48 @@ export function cancelScheduledTask(id) {
   }
 }
 
-export function scheduleSignIn(id, targetTime, activityName = '') {
+export function scheduleForActivity(activity) {
+  const { clubActivityId, activityName, mmdd, startTime, endTime } = activity;
+
+  const id = `act-${clubActivityId}`;
   if (scheduledTasks.has(id)) {
-    return { error: '该时间已有定时任务' };
+    return { error: '该活动已有定时任务' };
   }
 
-  const delayMs = new Date(targetTime).getTime() - Date.now();
+  const year = new Date().getFullYear();
+  const [month, day] = mmdd.split('-').map(Number);
+  const [startH, startM] = startTime.split(':').map(Number);
+  const [endH, endM] = (endTime || '').split(':').map(Number);
+
+  const signInDelay = 60 + Math.floor(Math.random() * 180);
+  const targetDate = new Date(year, month - 1, day, startH, startM, 0);
+  const signInTime = new Date(targetDate.getTime() + signInDelay * 1000);
+
+  const delayMs = signInTime.getTime() - Date.now();
   if (delayMs < 0) {
-    return { error: '目标时间已过' };
+    return { error: `活动 ${mmdd} ${startTime} 已过，无法定时` };
   }
+
+  const actDurationMin = endH && endM ? (endH - startH) * 60 + (endM - startM) : 30;
+  const backDelayMs = getSignBackDelay(actDurationMin);
 
   const task = {
+    clubActivityId,
     activityName,
-    targetTime,
+    date: `${mmdd}`,
+    startTime,
+    endTime: endTime || '',
+    signInAt: signInTime.toISOString(),
+    signBackAt: new Date(signInTime.getTime() + backDelayMs).toISOString(),
     status: 'waiting',
     signInResult: null,
     signBackResult: null,
     timer: null,
     backTimer: null,
-    createdAt: new Date().toISOString(),
   };
 
   task.timer = setTimeout(async () => {
     task.status = 'signing_in';
-
-    const signInDelay = 1000 + Math.floor(Math.random() * 3000);
-    await sleep(signInDelay);
-
     try {
       const info = await getSignInInfo();
       if (!info || !info.activityId) {
@@ -54,14 +69,9 @@ export function scheduleSignIn(id, targetTime, activityName = '') {
         task.signInResult = '无可签到活动（不在活动时间内）';
         return;
       }
-
-      task.activityName = info.activityName || task.activityName;
-      const result = await signIn(info.activityId, info.latitude, info.longitude);
+      await signIn(info.activityId, info.latitude, info.longitude);
       task.status = 'signed_in';
       task.signInResult = '签到成功';
-
-      const backDelay = getSignBackDelay(30);
-      task.signBackTime = new Date(Date.now() + backDelay).toISOString();
 
       task.backTimer = setTimeout(async () => {
         task.status = 'signing_back';
@@ -73,14 +83,13 @@ export function scheduleSignIn(id, targetTime, activityName = '') {
             task.signBackResult = '签退成功';
           } else {
             task.status = 'completed';
-            task.signBackResult = '无需签退或已超时';
+            task.signBackResult = '无需签退';
           }
         } catch (e) {
           task.status = 'back_failed';
           task.signBackResult = e.message;
         }
-      }, backDelay);
-
+      }, backDelayMs);
     } catch (e) {
       task.status = 'failed';
       task.signInResult = e.message;
@@ -88,9 +97,7 @@ export function scheduleSignIn(id, targetTime, activityName = '') {
   }, delayMs);
 
   scheduledTasks.set(id, task);
-  return { success: true, delayMs, id };
-}
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  const signInTimeStr = signInTime.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  const signBackTimeStr = new Date(signInTime.getTime() + backDelayMs).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit' });
+  return { success: true, id, signInTimeStr, signBackTimeStr };
 }
