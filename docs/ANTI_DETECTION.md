@@ -1,151 +1,164 @@
-# HappyRun 风控对策模块 (Anti-Detection)
+# HappyRun 风控对策模块
 
 ## 概述
 
-本模块提供策略层逻辑，降低自动化行为被服务端检测的风险。
-覆盖两个场景：校园跑 和 俱乐部签到。
+本文档基于对 Unirun APK (`com.tanma.unirun`) 的逆向分析，梳理服务端/客户端的检测机制，以及 HappyRun 在代码中实现的对抗措施。
 
 ---
 
-## 一、校园跑风控
+## 一、校园跑
 
-### 逆向分析发现
+### 1.1 检测机制（逆向发现）
 
-#### 客户端层 (APK)
+#### 客户端检测 (APK 内)
 
-| 文件 | 机制 | 说明 |
-|------|------|------|
-| `RunningServiceImpl.onLocationSuccess()` | 轨迹有效性判断 | 1022条指令，jadx反编译失败，核心过滤逻辑 |
-| `RunningPresenterImpl.checkRunRecord()` | 提交前校验 | 451条指令，jadx反编译失败，决定是否valid/unvalid |
-| `RunningServiceImpl.getMostAccuracyLocation()` | 精度过滤 | `locationType==1 && gpsAccuracyStatus==1 && accuracy<=20m` |
-| `GaoDeMapUtils.isInSchoolArea()` | 围栏检测 | 80%轨迹点在校区多边形内即通过 |
-| `TrackUtils.getDistance()` | 距离计算 | `AMapUtils.calculateLineDistance() * 1.3` 系数 |
-| `StepUtil` | 步数验证 | 注册 TYPE_STEP_DETECTOR(18) 和 TYPE_STEP_COUNTER(19) 传感器 |
-| `RunTrackManager` | 定位模式 | `AMapLocationMode.Device_Sensors`（纯GPS） |
+| 检测项 | APK 位置 | 逻辑 |
+|--------|----------|------|
+| GPS 精度过滤 | `RunningServiceImpl.getMostAccuracyLocation()` | `locationType==1 && gpsAccuracyStatus==1 && accuracy<=20m` 才算有效点 |
+| 校区围栏 | `GaoDeMapUtils.isInSchoolArea()` | 80% 轨迹点必须在校区多边形内 |
+| 距离计算 | `TrackUtils.getDistance()` | `AMapUtils.calculateLineDistance() × 1.3` 系数 |
+| 轨迹有效性 | `RunningServiceImpl.onLocationSuccess()` | 1022 条指令，jadx 反编译失败，核心过滤 |
+| 提交前校验 | `RunningPresenterImpl.checkRunRecord()` | 451 条指令，jadx 反编译失败，判定 valid/unvalid |
+| 步数传感器 | `StepUtil` | 注册 TYPE_STEP_DETECTOR(18) + TYPE_STEP_COUNTER(19) |
+| 定位模式 | `RunTrackManager` | 强制 `Device_Sensors`（纯 GPS，拒绝网络定位） |
+| 声纹验证 | `VocalVerifyApi` + 讯飞 SDK | `openStatus="1"` 时需声纹验证（当前学校未开启） |
 
-#### 服务端层 (API 返回字段验证)
+#### 服务端检测 (API 返回字段验证)
 
-| 字段 | 来源 | 含义 | 当前账号状态 |
-|------|------|------|-------------|
-| `suspectedStatus` | 跑步记录查询 API | `"1"` = 被标记为可疑 | 5/2、5/3 的记录已被标记 |
-| `rangeStatus` | 跑步记录查询 API | `"1"` = 围栏检测结果 | 被标记的记录有此字段 |
-| `runSpeedWarn` | 跑步记录查询 API | `"0"` = 正常 | 目前正常 |
-| `runStatus` | 跑步记录查询 API | `"1"`=有效，`"6"`=重复 | — |
-| `overSpeedWarn` | RunStandard 配置 | 超速提示文案 | "您的速度过快啦，疑似使用代步工具哟~" |
-| `boyMaxSpeed/MinSpeed` | RunStandard 配置 | 500/100（配速上下限） | 服务端计算的配速单位 |
-| `boyRunSpeed` | RunStandard 配置 | 300（参考正常配速） | — |
+| 字段 | 含义 | 检测逻辑 |
+|------|------|----------|
+| `suspectedStatus:"1"` | 可疑标记 | **后置审核**：提交时返回"有效"，事后可能被改标（5/2、5/3 记录已被标记） |
+| `rangeStatus:"1"` | 围栏异常 | 轨迹点超出校区范围 |
+| `runSpeedWarn:"1"` | 超速警告 | 配速超过 `boyMaxSpeed(500)` |
+| `runStatus:"6"` | 重复提交 | 当天已有有效记录 |
+| `overSpeedWarn` | 超速文案 | "您的速度过快啦，疑似使用代步工具哟~" |
+| `boyMaxSpeed/MinSpeed` | 配速限制 | 500/100（服务端配速单位 = `distance/time × 1.66`） |
+| `startRun` 锁 | 状态锁定 | 调用 `v1/push/startRun` 后不提交，服务端锁定为"跑步中" |
 
-#### 关键分析
+### 1.2 我们的对抗措施
 
-1. **不能调用 `v1/push/startRun`** — 会触发服务端跑步状态锁，后续请求全部返回"请勿重复提交"
-2. **配速单位**：服务端 `runSpeed = distance/time * 1.66`（实测推算），安全范围 120-450
-3. **步数未在V2 API中提交** — `StudentRunRecordRequestBody` 无步数字段，但服务端可能通过其他方式关联
-4. **`suspectedStatus` 是后置审核** — 提交时返回"有效跑步"，事后可能被改标为可疑
-5. **无 root/Xposed/Frida 检测** — APK 内无反调试、无签名校验、无 Native SO 层检测
+| 风险 | 对抗策略 | 代码位置 | 说明 |
+|------|----------|----------|------|
+| 配速异常 | 安全区间校验 | `anti-detection.js: calculateSafePace()` | 服务端配速 120-450 安全，180-300 最优，前端滑块实时反馈 |
+| 围栏检测 | 全部点在多边形内生成 | `track-generator.js: pointInPolygon()` | 碰壁 U 形转弯，不瞬移 |
+| 轨迹太均匀 | 随机时间间隔 | `track-generator.js: interval = 3 + random()*3` | 非固定 4s，stddev > 0.8s |
+| 无停顿（机器特征） | 插入随机停顿 | `track-generator.js: pauseCount/pauseAtSeconds` | 1-3 次停顿，每次 5-15s |
+| 速度恒定（机器特征） | 惯性速度模型 | `track-generator.js: currentSpeed += (target - current)*0.3` | 渐变加减速，变异系数 >0.1 |
+| GPS 抖动不连续 | 自相关抖动 | `track-generator.js: jitter = prev*0.7 + new*0.3` | 连续噪声，非独立随机 |
+| 提交时间=轨迹结束 | 提交缓冲 | `track-generator.js: buffer = 60+random(120)` | 轨迹结束比提交早 1-3 分钟 |
+| 精度值单一 | 随机精度 | `track-generator.js: accuracy = 5-16` | 至少 4 种不同值 |
+| startRun 触发锁 | 不调用 | `run.js` | 直接提交 `save/run/record/new`，绕过状态锁 |
+| 设备指纹相同 | 随机设备 | `config.js: randomDevice()` | 5 品牌 × 25+ 机型 × 4 系统版本，每次登录随机 |
+| 提交时段异常 | 安全时段检查 | `anti-detection.js: isInSafeRunWindow()` | 仅 6-8 / 17-21 点，亚洲/上海时区 |
+| 提交频率异常 | 频率控制 | `anti-detection.js: shouldRunToday()` | 每周 3-4 次，15% 随机跳过 |
+| 轨迹质量检测 | 自检评分 | `anti-detection.js: scoreTrack()` | 提交后显示风险分，检测 5 个维度 |
+| 距离系数 | 匹配 1.3x | `track-generator.js: DISTANCE_FACTOR = 1.3` | 与 APK `TrackUtils.getDistance()` 一致 |
 
-### 已知服务端检测维度
+### 1.3 轨迹质量评分维度 (`scoreTrack`)
 
-| 维度 | 检测方式 | 应对 |
+| 维度 | 扣分条件 | 分值 |
 |------|----------|------|
-| 配速异常 | `boyMaxSpeed=500`, `boyMinSpeed=100`，超出标记 | 控制配速在安全区间 |
-| 超速警告 | `runSpeedWarn` 字段，`overSpeedWarn` 提示 | 配速不超过 boyRunSpeed(300) |
-| 可疑标记 | `suspectedStatus:"1"` 标记可疑记录 | 轨迹拟真、行为拟真 |
-| 围栏检测 | `rangeStatus` 检查是否在校区内 | 确保 >80% 点在围栏内 |
-| 重复提交 | `startRun` 触发锁 | 不调用 startRun |
-| 轨迹分析 | 对比 trackPoints 与 realityTrackPoints | 保持一致性 |
-
-### 风控策略
-
-| 策略 | 实现函数 | 说明 |
-|------|----------|------|
-| 安全时段 | `isInSafeRunWindow()` | 仅在 6:00-8:00 或 17:00-21:00 提交 |
-| 配速检测 | `calculateSafePace()` | 服务端配速 120-450 安全，180-300 最优 |
-| 频率控制 | `shouldRunToday()` | 每周 3-4 次，15% 概率随机跳过 |
-| 轨迹评分 | `scoreTrack()` | 检测时间均匀性、停顿、速度变异、精度多样性 |
-| 设备随机 | `randomDevice()` | 每次登录随机品牌/型号/系统版本 |
-| 提交缓冲 | track-generator | 轨迹结束时间比提交时刻早 60-180s |
-
-### 轨迹真实性细节
-
-- 时间间隔：3-6s 随机（非固定值）
-- 停顿：1-3 次，每次 5-15s（模拟系鞋带/等红灯）
-- GPS 抖动：连续自相关（0.7 衰减 + 0.3 新随机），非独立随机
-- 速度：惯性模型，渐变加减速，变异系数 >0.1
-- 碰壁：150°+ U 形转弯，非瞬移
-- 精度值：5-16 随机分布，至少 4 种不同值
+| 时间间隔均匀度 | stddev < 0.5s 扣 30，< 1.0s 扣 10 | -10 ~ -30 |
+| 停顿段 | 无任何 >8s 间隔 | -15 |
+| 速度变异系数 | CV < 0.1 (过于恒速) | -20 |
+| 精度值多样性 | 种类 < 4 | -10 |
 
 ---
 
-## 二、俱乐部签到风控
+## 二、俱乐部签到
 
-### 逆向分析发现
+### 2.1 检测机制（逆向发现）
 
-#### 客户端层 (APK SignInPresenterImpl.java)
+#### 客户端检测 (APK SignInPresenterImpl.java)
 
-| 机制 | 实现 | 说明 |
-|------|------|------|
-| GeoFence 围栏 | `GeoFenceClient` + `clockingRange` | 以活动坐标为圆心，`clockingRange` 为半径创建圆形围栏 |
-| 围栏状态 | `geoFence: boolean` | 进入围栏=true，离开=false |
-| 围栏外禁止签到 | `if (!geoFence)` 按钮变灰 | 显示"不在签到范围内"，阻止点击 |
-| 真实GPS坐标 | `currentLocation.getLatitude/getLongitude` | 签到时取手机实时定位填入 SignBody |
-| 双模式签到 | `clubOrClass` 标志 | false=俱乐部(SignBody)，true=体育课(SportsClassStudentLearnClockingBody) |
+| 检测项 | 实现 | 逻辑 |
+|--------|------|------|
+| GeoFence 围栏 | `GeoFenceClient` + `clockingRange` | 以活动坐标为圆心，`clockingRange` 为半径画圆 |
+| 围栏判定 | `geoFence: boolean` | 进入=true，离开=false |
+| 围栏外阻断 | `if (!geoFence)` 按钮变灰 | 显示"不在签到范围内"，禁止操作 |
+| 坐标来源 | `currentLocation.getLatitude/getLongitude` | 取手机实时 GPS 定位 |
+| 双模式 | `clubOrClass` 标志 | false=俱乐部(SignBody)，true=体育课(ClockingBody) |
 
-#### 服务端层 (API 行为推断)
+#### 服务端检测 (API 行为验证)
 
-| 机制 | 证据 | 风险 |
-|------|------|------|
-| 坐标验证 | SignBody 包含 `latitude/longitude`，服务端接收 | 服务端可校验坐标与活动地点的距离 |
-| 时间窗口 | `getSignInTf` 仅在活动时段返回有效数据 | 活动时间外签到直接返回空 |
-| 签退时限 | `signBackLimitTime` 字段 | 超时可能无法签退 |
-| 签到状态机 | signStatus: "1"→签到→"2"→签退→"3" | 状态不对时 API 拒绝 |
-| 旷课累计 | `signStatus: "0"` 在俱乐部记录中 | 连续旷课触发报名禁令（已验证：连续3次旷课禁报2天） |
+| 检测项 | 证据 | 逻辑 |
+|--------|------|------|
+| 坐标校验 | SignBody 含 `latitude/longitude` | 服务端接收坐标，可能校验与活动地点的距离 |
+| 时间窗口 | `getSignInTf` 活动外返回空 | 只有活动时段内才能签到 |
+| 签退时限 | `signBackLimitTime` 字段 | 超过时限无法签退 |
+| 状态机 | signStatus: 1→签到→2→签退→3 | 不可跳步，状态不对则拒绝 |
+| 旷课累计 | `signStatus:"0"` 记录 | **已验证：连续 3 次旷课 → 禁止报名 2 天** |
 
-#### 关键分析
+### 2.2 我们的对抗措施
 
-1. **围栏检查是客户端行为** — 我们直接调 `signInOrSignBack` API 绕过了 GeoFence 客户端检查
-2. **但坐标发给了服务端** — 服务端可能做二次距离校验
-3. **`clockingRange` 具体值未知** — 需在活动时间内通过 `getSignInTf` 或 `SportsClassStudentLearnClockingVO` 获取
-4. **我们使用活动返回坐标 + ±15m 偏移** — 在任何合理围栏半径内（通常 50-500m）都安全
+| 风险 | 对抗策略 | 代码位置 | 说明 |
+|------|----------|----------|------|
+| 坐标固定不变 | GPS 随机偏移 | `club.js: jitterCoordinate(lat, lng, 15)` | 每次签到/签退坐标 ±15m 偏移，在围栏半径内 |
+| 精确踩点签到 | 签到延迟 | `anti-detection.js: getSignInDelay()` | 活动开始后随机 1-5 分钟 |
+| 秒退 | 签退延迟 | `anti-detection.js: getSignBackDelay()` | 活动时长的 73%-95%，如 30min 活动 → 22-28min 后签退 |
+| 活动时间外签到 | 时段检查 | `anti-detection.js: getClubSignAdvice()` | 前端实时提示是否在活动时间内 |
+| 签到签退间隔太短 | 间隔检查 | `anti-detection.js: assessClubSignRisk()` | <5min 扣 40 分，<15min 扣 20 分 |
+| 旷课惩罚 | 频率控制 | `anti-detection.js: shouldJoinClubToday()` | 报名了就要签到，跟踪每周参加次数 |
+| 客户端围栏阻断 | 绕过客户端 | `club.js: signIn/signBack` 直接调 API | 不经过 GeoFenceClient，直接发请求 |
+| 自动签退忘记 | 定时签退 | `page.js: handleTimedSign()` | 签到后自动倒计时 22-28min 签退 |
 
-### 风控策略
-
-| 策略 | 实现函数 | 依据 |
-|------|----------|------|
-| GPS 偏移 | `jitterCoordinate(lat, lng, 15)` | 逆向确认坐标发给服务端，每次偏移避免精确重复 |
-| 签到延迟 | `getSignInDelay()` 1-5min | 避免活动开始 0 秒精确签到 |
-| 签退延迟 | `getSignBackDelay()` 73%-95% 活动时长 | 逆向发现 `signBackLimitTime` 存在时限 |
-| 时段检查 | `getClubSignAdvice()` | 逆向确认 `getSignInTf` 仅活动时段返回数据 |
-| 间隔检查 | `assessClubSignRisk()` | 签到-签退 <5min 极不自然 |
-| 频率控制 | `shouldJoinClubToday()` | 逆向发现旷课累计触发惩罚 |
-| 避免旷课 | 确保已报名活动都签到 | 连续3次旷课 → 禁报2天（实际触发过） |
-
-### 签到时序建议
+### 2.3 签到时序模型
 
 ```
 活动 18:00-18:30（30分钟）
 
-18:00        签到窗口开放
-18:01~18:04  [建议签到时刻] 延迟 1-4 分钟
-18:22~18:28  [建议签退时刻] 活动时长的 73%~95%
-18:30        签退窗口关闭
+18:00           签到窗口开放（getSignInTf 开始返回数据）
+18:01 ~ 18:04   ← 建议签到时刻（getSignInDelay: 1-5min 随机）
+18:22 ~ 18:28   ← 建议签退时刻（getSignBackDelay: 73%-95%）
+18:30           签退窗口关闭（signBackLimitTime 生效）
 ```
 
 ---
 
-## 三、通用风控
+## 三、通用对抗措施
 
-### 设备指纹
+### 3.1 设备指纹随机化
 
-每次登录随机选取设备组合，避免所有请求使用同一设备标识：
+| 维度 | 实现 | 代码 |
+|------|------|------|
+| 品牌 | Xiaomi/HUAWEI/OPPO/vivo/samsung 随机 | `config.js: randomDevice()` |
+| 机型 | 每个品牌 4-6 款机型随机 | 同上 |
+| 系统版本 | Android 10-14 随机 | 同上 |
+| App 版本 | 1.8.0 ~ 1.9.0 随机 | 同上 |
+| 会话一致性 | 同一次登录不变 | `auth.js: session.device` |
 
-- 5 种品牌 × 4-6 款机型 = 25+ 种组合
-- 4 种系统版本 × 4 种 App 版本 = 16 种组合
-- 同一次会话内保持不变（一个人不会换手机）
+### 3.2 认证安全
 
-### 建议使用模式
+| 措施 | 代码 | 说明 |
+|------|------|------|
+| 密码 MD5 | `auth.js: md5(password)` | 与 APK `MD5Digest.encodeByMD5()` 一致 |
+| Cookie 仅存 token | `login/route.js` | 不存明文密码 |
+| Token 续期恢复 | `session.js: loginByToken()` | 用 `v1/auth/query/token` 恢复会话 |
+| Cookie 安全标志 | `HttpOnly;SameSite=Strict` | 防 XSS / CSRF |
+| 签名算法 | `sign.js: computeSign()` | 还原 APK `MyInterceptor` 的 MD5 签名 |
 
-1. **不要每天都跑** — 真人每周 3-4 次，偶尔跳过
-2. **在正常时间提交** — 早上 6-8 点或下午 17-21 点
-3. **距离不要太极端** — 1.5-3km 最自然，别卡最低最高限
-4. **俱乐部别秒退** — 签到后至少 20 分钟再签退
-5. **用自定义路线** — 比纯随机游走更真实
+### 3.3 请求签名算法（逆向还原）
+
+```
+1. 取 URL 查询参数，按 key 字母排序
+2. 拼接: key1+value1+key2+value2+...
+3. 追加 APPKEY + APPSECRET
+4. 追加 POST body JSON 字符串
+5. 检查是否含 空格/~/!/(/)/单引号
+   - 有: 删除这些字符 → encodeURIComponent → MD5 大写 + "encodeutf8"
+   - 无: 直接 MD5 大写
+```
+
+---
+
+## 四、使用建议
+
+| 场景 | 建议 | 原因 |
+|------|------|------|
+| 校园跑频率 | 每周 3-4 次，别每天跑 | 真人不可能天天跑，频率异常容易被标记 |
+| 校园跑时段 | 早 6-8 点或晚 17-21 点 | 凌晨/深夜提交极不自然 |
+| 校园跑距离 | 1.5-3km | 卡最低或最高限都可疑，中间段最安全 |
+| 校园跑配速 | 5.5-7.5 min/km | 对应服务端配速 180-300，最优区间 |
+| 俱乐部签退 | 签到后至少 20 分钟 | <5min 极易被判无效 |
+| 俱乐部报名 | 报了就去签到 | 连续 3 次旷课 → 禁报 2 天（已实际触发） |
+| 自定义路线 | 有条件就录一条真实路线复用 | 比随机游走轨迹真实得多 |
