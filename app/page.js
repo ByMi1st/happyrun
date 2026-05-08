@@ -403,10 +403,17 @@ export default function Home() {
                         {rushing && <div className="pulse" style={{ fontSize: 11, color: statusColors[rushing.status] || '#007AFF', marginTop: 2 }}>抢报{rushing.status === 'success' ? '成功' : rushing.status === 'failed' ? '失败' : '中...'}</div>}
                       </div>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-                        {btn.canCancel
-                          ? <button className="btn-sm" style={{ background: 'rgba(255,59,48,.08)', color: '#FF3B30' }} onClick={() => handleClubAction(a, 'cancel')} disabled={btnLoading[ck]}>{btnLoading[ck] ? '...' : '取消'}</button>
-                          : <button className="btn-sm" style={btn.style} disabled={btn.label !== '报名' || btnLoading[jk]} onClick={() => handleClubAction(a, 'join')}>{btnLoading[jk] ? '...' : btn.label}</button>
-                        }
+                        {btn.canCancel ? (<>
+                          <button className="btn-sm" style={{ background: 'rgba(255,59,48,.08)', color: '#FF3B30' }} onClick={() => handleClubAction(a, 'cancel')} disabled={btnLoading[ck]}>{btnLoading[ck] ? '...' : '取消'}</button>
+                          {!scheduledTasks.some(t => t.clubActivityId === a.clubActivityId) && (
+                            <button className="btn-sm" style={{ background: '#5856D6', color: '#fff', fontSize: 11 }} onClick={() => scheduleActivity(a)}>定时签到</button>
+                          )}
+                          {scheduledTasks.some(t => t.clubActivityId === a.clubActivityId) && (
+                            <span style={{ fontSize: 11, color: '#007AFF', textAlign: 'center' }}>已定时</span>
+                          )}
+                        </>) : (<>
+                          <button className="btn-sm" style={btn.style} disabled={btn.label !== '报名' || btnLoading[jk]} onClick={() => handleClubAction(a, 'join')}>{btnLoading[jk] ? '...' : btn.label}</button>
+                        </>)}
                         {a.fullActivity === '1' && a.optionStatus !== '4' && <button className="btn-sm" style={{ background: '#FF3B30', color: '#fff', fontSize: 11, padding: '5px 10px' }} onClick={() => handleRush(a)} disabled={btnLoading[`rush-${a.clubActivityId}`]}>{btnLoading[`rush-${a.clubActivityId}`] ? '...' : '抢报'}</button>}
                       </div>
                     </div>
