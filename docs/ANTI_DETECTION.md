@@ -9,6 +9,40 @@
 
 ## 一、校园跑风控
 
+### 逆向分析发现
+
+#### 客户端层 (APK)
+
+| 文件 | 机制 | 说明 |
+|------|------|------|
+| `RunningServiceImpl.onLocationSuccess()` | 轨迹有效性判断 | 1022条指令，jadx反编译失败，核心过滤逻辑 |
+| `RunningPresenterImpl.checkRunRecord()` | 提交前校验 | 451条指令，jadx反编译失败，决定是否valid/unvalid |
+| `RunningServiceImpl.getMostAccuracyLocation()` | 精度过滤 | `locationType==1 && gpsAccuracyStatus==1 && accuracy<=20m` |
+| `GaoDeMapUtils.isInSchoolArea()` | 围栏检测 | 80%轨迹点在校区多边形内即通过 |
+| `TrackUtils.getDistance()` | 距离计算 | `AMapUtils.calculateLineDistance() * 1.3` 系数 |
+| `StepUtil` | 步数验证 | 注册 TYPE_STEP_DETECTOR(18) 和 TYPE_STEP_COUNTER(19) 传感器 |
+| `RunTrackManager` | 定位模式 | `AMapLocationMode.Device_Sensors`（纯GPS） |
+
+#### 服务端层 (API 返回字段验证)
+
+| 字段 | 来源 | 含义 | 当前账号状态 |
+|------|------|------|-------------|
+| `suspectedStatus` | 跑步记录查询 API | `"1"` = 被标记为可疑 | 5/2、5/3 的记录已被标记 |
+| `rangeStatus` | 跑步记录查询 API | `"1"` = 围栏检测结果 | 被标记的记录有此字段 |
+| `runSpeedWarn` | 跑步记录查询 API | `"0"` = 正常 | 目前正常 |
+| `runStatus` | 跑步记录查询 API | `"1"`=有效，`"6"`=重复 | — |
+| `overSpeedWarn` | RunStandard 配置 | 超速提示文案 | "您的速度过快啦，疑似使用代步工具哟~" |
+| `boyMaxSpeed/MinSpeed` | RunStandard 配置 | 500/100（配速上下限） | 服务端计算的配速单位 |
+| `boyRunSpeed` | RunStandard 配置 | 300（参考正常配速） | — |
+
+#### 关键分析
+
+1. **不能调用 `v1/push/startRun`** — 会触发服务端跑步状态锁，后续请求全部返回"请勿重复提交"
+2. **配速单位**：服务端 `runSpeed = distance/time * 1.66`（实测推算），安全范围 120-450
+3. **步数未在V2 API中提交** — `StudentRunRecordRequestBody` 无步数字段，但服务端可能通过其他方式关联
+4. **`suspectedStatus` 是后置审核** — 提交时返回"有效跑步"，事后可能被改标为可疑
+5. **无 root/Xposed/Frida 检测** — APK 内无反调试、无签名校验、无 Native SO 层检测
+
 ### 已知服务端检测维度
 
 | 维度 | 检测方式 | 应对 |
@@ -44,26 +78,46 @@
 
 ## 二、俱乐部签到风控
 
-### 已知服务端检测维度
+### 逆向分析发现
 
-| 维度 | 检测方式 | 应对 |
-|------|----------|------|
-| GPS 围栏 | 签到坐标须在活动地点范围内 | 使用活动坐标 + ±15m 随机偏移 |
-| 时间窗口 | 必须在活动时间段内 (startTime ~ endTime) | 严格检查后再执行 |
-| 签退间隔 | 过快签退被判无效（如1分钟就签退） | 延迟 73%-95% 活动时长 |
-| 签到时刻 | 精确踩点签到显得不自然 | 延迟 1-5 分钟后签到 |
-| 旷课累计 | 连续旷课触发惩罚（禁止报名 N 天） | 确保已报名活动都签到 |
+#### 客户端层 (APK SignInPresenterImpl.java)
+
+| 机制 | 实现 | 说明 |
+|------|------|------|
+| GeoFence 围栏 | `GeoFenceClient` + `clockingRange` | 以活动坐标为圆心，`clockingRange` 为半径创建圆形围栏 |
+| 围栏状态 | `geoFence: boolean` | 进入围栏=true，离开=false |
+| 围栏外禁止签到 | `if (!geoFence)` 按钮变灰 | 显示"不在签到范围内"，阻止点击 |
+| 真实GPS坐标 | `currentLocation.getLatitude/getLongitude` | 签到时取手机实时定位填入 SignBody |
+| 双模式签到 | `clubOrClass` 标志 | false=俱乐部(SignBody)，true=体育课(SportsClassStudentLearnClockingBody) |
+
+#### 服务端层 (API 行为推断)
+
+| 机制 | 证据 | 风险 |
+|------|------|------|
+| 坐标验证 | SignBody 包含 `latitude/longitude`，服务端接收 | 服务端可校验坐标与活动地点的距离 |
+| 时间窗口 | `getSignInTf` 仅在活动时段返回有效数据 | 活动时间外签到直接返回空 |
+| 签退时限 | `signBackLimitTime` 字段 | 超时可能无法签退 |
+| 签到状态机 | signStatus: "1"→签到→"2"→签退→"3" | 状态不对时 API 拒绝 |
+| 旷课累计 | `signStatus: "0"` 在俱乐部记录中 | 连续旷课触发报名禁令（已验证：连续3次旷课禁报2天） |
+
+#### 关键分析
+
+1. **围栏检查是客户端行为** — 我们直接调 `signInOrSignBack` API 绕过了 GeoFence 客户端检查
+2. **但坐标发给了服务端** — 服务端可能做二次距离校验
+3. **`clockingRange` 具体值未知** — 需在活动时间内通过 `getSignInTf` 或 `SportsClassStudentLearnClockingVO` 获取
+4. **我们使用活动返回坐标 + ±15m 偏移** — 在任何合理围栏半径内（通常 50-500m）都安全
 
 ### 风控策略
 
-| 策略 | 实现函数 | 说明 |
+| 策略 | 实现函数 | 依据 |
 |------|----------|------|
-| GPS 偏移 | `jitterCoordinate()` | 每次签到/签退坐标随机偏移 ±15m |
-| 签到延迟 | `getSignInDelay()` | 活动开始后 1-5 分钟内签到 |
-| 签退延迟 | `getSignBackDelay()` | 活动时长 73%-95% 后签退 |
-| 时段检查 | `getClubSignAdvice()` | 检查当前是否在活动时间窗口内 |
-| 间隔检查 | `assessClubSignRisk()` | 签到-签退间隔 <5min 扣 40 分 |
-| 频率控制 | `shouldJoinClubToday()` | 每周参加次数建议 |
+| GPS 偏移 | `jitterCoordinate(lat, lng, 15)` | 逆向确认坐标发给服务端，每次偏移避免精确重复 |
+| 签到延迟 | `getSignInDelay()` 1-5min | 避免活动开始 0 秒精确签到 |
+| 签退延迟 | `getSignBackDelay()` 73%-95% 活动时长 | 逆向发现 `signBackLimitTime` 存在时限 |
+| 时段检查 | `getClubSignAdvice()` | 逆向确认 `getSignInTf` 仅活动时段返回数据 |
+| 间隔检查 | `assessClubSignRisk()` | 签到-签退 <5min 极不自然 |
+| 频率控制 | `shouldJoinClubToday()` | 逆向发现旷课累计触发惩罚 |
+| 避免旷课 | 确保已报名活动都签到 | 连续3次旷课 → 禁报2天（实际触发过） |
 
 ### 签到时序建议
 
