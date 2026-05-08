@@ -17,8 +17,7 @@ export default function Home() {
   const [timerCountdown, setTimerCountdown] = useState('');
   const timerRef = useRef(null);
   const [scheduleTimer, setScheduleTimer] = useState(null);
-  const [scheduleCountdown, setScheduleCountdown] = useState('');
-  const scheduleRef = useRef(null);
+  const [scheduledTasks, setScheduledTasks] = useState([]);
   const [routes, setRoutes] = useState([]);
   const [selectedRoute, setSelectedRoute] = useState('');
   const [rushStatus, setRushStatus] = useState([]);
@@ -262,82 +261,65 @@ export default function Home() {
     } catch (e) { showMsg(`定时签退失败：${e.message}`, 'error'); }
   }
 
-  function handleScheduleSign() {
-    if (scheduleTimer) {
-      clearInterval(scheduleRef.current);
-      setScheduleTimer(null);
-      setScheduleCountdown('');
-      showMsg('已取消定时签到', 'info');
+  async function handleScheduleSign() {
+    const now = new Date();
+    const h = now.getHours(), m = now.getMinutes();
+    const defaultDate = now.toISOString().slice(0, 10);
+    const defaultTime = h < 18 ? '18:01' : `${h}:${String(Math.min(m + 2, 59)).padStart(2, '0')}`;
+
+    const input = prompt(
+      `设定签到时间\n格式: YYYY-MM-DD HH:MM（如 ${defaultDate} ${defaultTime}）\n或只填 HH:MM 表示今天`,
+      `${defaultDate} ${defaultTime}`
+    );
+    if (!input) return;
+
+    let targetTime;
+    if (/^\d{2}:\d{2}$/.test(input.trim())) {
+      targetTime = `${defaultDate}T${input.trim()}:00`;
+    } else if (/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}$/.test(input.trim())) {
+      const [d, t] = input.trim().split(/\s+/);
+      targetTime = `${d}T${t}:00`;
+    } else {
+      showMsg('时间格式错误，请使用 HH:MM 或 YYYY-MM-DD HH:MM', 'error');
       return;
     }
 
-    const now = new Date();
-    const h = now.getHours(), m = now.getMinutes();
-    const defaultTime = h < 18 ? '18:01' : `${h}:${String(m + 1).padStart(2, '0')}`;
-    const input = prompt(`设定签到时间（格式 HH:MM，如 18:01）`, defaultTime);
-    if (!input) return;
-
-    const [targetH, targetM] = input.split(':').map(Number);
-    if (isNaN(targetH) || isNaN(targetM)) { showMsg('时间格式错误', 'error'); return; }
-
-    const target = new Date();
-    target.setHours(targetH, targetM, 0, 0);
-    if (target.getTime() <= Date.now()) {
+    if (new Date(targetTime).getTime() <= Date.now()) {
       showMsg('目标时间已过，请设置未来的时间', 'error');
       return;
     }
 
-    setScheduleTimer({ targetH, targetM });
-    showMsg(`定时签到已设置：${input} 自动签到 → 自动签退`, 'success');
+    try {
+      const res = await fetch('/api/schedule', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetTime }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      showMsg(`定时签到已创建：${input.trim()} → 自动签到 → 自动签退`, 'success', 6000);
+      loadScheduledTasks();
+    } catch (e) { showMsg(e.message, 'error'); }
+  }
 
-    scheduleRef.current = setInterval(async () => {
-      const remaining = Math.max(0, Math.round((target.getTime() - Date.now()) / 1000));
-      if (remaining <= 0) {
-        clearInterval(scheduleRef.current);
-        setScheduleCountdown('签到中...');
+  async function loadScheduledTasks() {
+    try {
+      const res = await fetch('/api/schedule');
+      if (res.ok) setScheduledTasks(await res.json());
+    } catch {}
+  }
 
-        try {
-          const res = await fetch('/api/club', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'signIn' }),
-          });
-          const data = await res.json();
-          if (data.result?.success) {
-            showMsg(`定时签到成功！活动：${data.result.activityName}，等待自动签退...`, 'success', 8000);
-
-            const delay = (22 + Math.floor(Math.random() * 6)) * 60;
-            const endTime = Date.now() + delay * 1000;
-            setTimerActive(true);
-            timerRef.current = setInterval(() => {
-              const rem = Math.max(0, Math.round((endTime - Date.now()) / 1000));
-              if (rem <= 0) {
-                clearInterval(timerRef.current);
-                setTimerActive(false);
-                setTimerCountdown('');
-                executeTimedSignBack();
-              } else {
-                setTimerCountdown(`${Math.floor(rem / 60)}:${String(rem % 60).padStart(2, '0')}`);
-              }
-            }, 1000);
-          } else {
-            showMsg(`定时签到失败：${data.result?.message || '当前无可签到活动'}`, 'error', 8000);
-          }
-        } catch (e) { showMsg(`定时签到异常：${e.message}`, 'error'); }
-
-        setScheduleTimer(null);
-        setScheduleCountdown('');
-      } else {
-        const mm = Math.floor(remaining / 60);
-        const ss = remaining % 60;
-        setScheduleCountdown(`${mm}:${String(ss).padStart(2, '0')}`);
-      }
-    }, 1000);
+  async function cancelSchedule(id) {
+    try {
+      await fetch(`/api/schedule?id=${id}`, { method: 'DELETE' });
+      showMsg('已取消定时任务', 'info');
+      loadScheduledTasks();
+    } catch {}
   }
 
   // ===== Effects =====
   useEffect(() => {
-    if (session && tab === 'club') { loadActivities(); loadRushStatus(); checkClubRisk(); }
+    if (session && tab === 'club') { loadActivities(); loadRushStatus(); checkClubRisk(); loadScheduledTasks(); }
     if (session && tab === 'mine') loadMyActivities();
     if (session && tab === 'run') loadRoutes();
   }, [tab, session]);
@@ -345,7 +327,6 @@ export default function Home() {
   useEffect(() => {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
-      if (scheduleRef.current) clearInterval(scheduleRef.current);
     };
   }, []);
 
@@ -511,15 +492,45 @@ export default function Home() {
               </button>
             </div>
             <div style={{ marginBottom: 10 }}>
-              <button
-                style={{ ...styles.btnSchedule, ...(scheduleTimer ? { background: '#c62828' } : {}) }}
-                onClick={handleScheduleSign}
-              >
-                {scheduleTimer
-                  ? (scheduleCountdown === '签到中...' ? '签到中...' : `取消定时 (${scheduleCountdown})`)
-                  : '定时签到（设定时间自动签到+签退）'}
+              <button style={styles.btnSchedule} onClick={handleScheduleSign}>
+                定时签到（设定时间自动签到+签退）
               </button>
             </div>
+
+            {scheduledTasks.length > 0 && (
+              <div style={{ marginBottom: 12 }}>
+                {scheduledTasks.map(t => {
+                  const statusMap = {
+                    waiting: '⏳ 等待中',
+                    signing_in: '🔄 签到中...',
+                    signed_in: '✓ 已签到，等待签退',
+                    signing_back: '🔄 签退中...',
+                    completed: '✓ 已完成',
+                    failed: '✗ 失败',
+                    back_failed: '⚠ 签退失败',
+                  };
+                  const timeStr = new Date(t.targetTime).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+                  const isDone = ['completed', 'failed', 'back_failed'].includes(t.status);
+                  return (
+                    <div key={t.id} style={{ ...styles.taskCard, opacity: isDone ? 0.6 : 1 }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 13, fontWeight: 500 }}>
+                          {timeStr} {t.activityName && `· ${t.activityName}`}
+                        </div>
+                        <div style={{ fontSize: 12, color: t.status === 'failed' || t.status === 'back_failed' ? '#c62828' : '#666', marginTop: 2 }}>
+                          {statusMap[t.status] || t.status}
+                          {t.signInResult && t.status === 'failed' && ` - ${t.signInResult}`}
+                          {t.signBackResult && ` - ${t.signBackResult}`}
+                        </div>
+                      </div>
+                      {!isDone && (
+                        <button style={styles.btnTaskCancel} onClick={() => cancelSchedule(t.id)}>取消</button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
 
             {clubRisk && (
               <div style={{ marginBottom: 12 }}>
@@ -636,6 +647,8 @@ const styles = {
   btnOrange: { flex: 1, padding: '9px 6px', background: '#ff9800', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, cursor: 'pointer', fontWeight: 500 },
   btnBlue: { flex: 1.5, padding: '9px 6px', background: '#1565c0', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, cursor: 'pointer', fontWeight: 500 },
   btnSchedule: { width: '100%', padding: '9px 6px', background: '#7b1fa2', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, cursor: 'pointer', fontWeight: 500 },
+  taskCard: { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', background: '#f5f5f5', borderRadius: 8, marginBottom: 6 },
+  btnTaskCancel: { padding: '4px 10px', background: '#fff', color: '#c62828', border: '1px solid #c62828', borderRadius: 6, fontSize: 11, cursor: 'pointer', whiteSpace: 'nowrap' },
   actCard: { display: 'flex', alignItems: 'center', gap: 10, padding: '12px 0', borderBottom: '1px solid #f5f5f5' },
   actMeta: { fontSize: 12, color: '#888', marginTop: 2 },
   btnJoin: { padding: '7px 14px', background: '#ff8c00', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, cursor: 'pointer', fontWeight: 500, whiteSpace: 'nowrap' },
