@@ -1,27 +1,37 @@
 import { joinActivity } from './club.js';
+import { getAccount } from './account-manager.js';
 
 let rushTasks = new Map();
 
-export function getRushStatus(activityId) {
-  return rushTasks.get(activityId) || null;
+function taskKey(phone, activityId) {
+  return `${phone}:${activityId}`;
 }
 
-export function getAllRushStatus() {
+export function getRushStatus(phone, activityId) {
+  return rushTasks.get(taskKey(phone, activityId)) || null;
+}
+
+export function getAllRushStatus(phone) {
   const result = [];
-  for (const [id, task] of rushTasks) {
-    result.push({ activityId: id, ...task });
+  for (const [key, task] of rushTasks) {
+    if (phone && !key.startsWith(`${phone}:`)) continue;
+    const [p, id] = key.split(':');
+    result.push({ phone: p, activityId: Number(id), ...task });
   }
   return result;
 }
 
-export function cancelRush(activityId) {
-  const task = rushTasks.get(activityId);
+export function cancelRush(phone, activityId) {
+  const key = taskKey(phone, activityId);
+  const task = rushTasks.get(key);
   if (task?.timer) clearTimeout(task.timer);
-  rushTasks.delete(activityId);
+  rushTasks.delete(key);
 }
 
-export function scheduleRush(activityId, activityName, delayMs) {
-  if (rushTasks.has(activityId)) {
+export function scheduleRush(account, activityId, activityName, delayMs) {
+  const { phone } = account;
+  const key = taskKey(phone, activityId);
+  if (rushTasks.has(key)) {
     return { error: '该活动已有抢报任务' };
   }
 
@@ -38,8 +48,9 @@ export function scheduleRush(activityId, activityName, delayMs) {
     task.status = 'rushing';
     const maxAttempts = 20;
     for (let i = 0; i < maxAttempts; i++) {
+      const current = getAccount(phone) || account;
       try {
-        const result = await joinActivity(activityId);
+        const result = await joinActivity(current, activityId);
         task.status = 'success';
         task.result = result;
         return;
@@ -56,7 +67,7 @@ export function scheduleRush(activityId, activityName, delayMs) {
     task.result = '超过最大尝试次数';
   }, delayMs);
 
-  rushTasks.set(activityId, task);
+  rushTasks.set(key, task);
   return { success: true, startAt };
 }
 

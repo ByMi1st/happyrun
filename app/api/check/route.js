@@ -1,26 +1,27 @@
-import { ensureSession } from '../session.js';
+import { ensureAccounts } from '../session.js';
+import { getAccount } from '../../../src/lib/account-manager.js';
 import {
   isInSafeRunWindow, getNextSafeWindow, calculateSafePace,
   shouldRunToday, getAntiDetectionAdvice,
   getClubSignAdvice, shouldJoinClubToday,
 } from '../../../src/lib/anti-detection.js';
-import client from '../../../src/lib/client.js';
 
 export async function POST(request) {
   try {
-    const session = await ensureSession();
-    if (!session) return Response.json({ error: '未登录' }, { status: 401 });
-
+    await ensureAccounts();
     const body = await request.json().catch(() => ({}));
-    const { type, distance, time, activityStartTime, activityEndTime } = body;
+    const { phone, type, distance, time, activityStartTime, activityEndTime } = body;
+
+    const account = getAccount(phone);
+    if (!account) return Response.json({ error: '未登录或缺少phone参数' }, { status: 401 });
 
     if (type === 'club') {
       const clubAdvice = getClubSignAdvice(activityStartTime, activityEndTime);
 
       let clubFrequency = null;
       try {
-        const records = await client.get('v1/clubactivity/getStudentClubRecord', {
-          params: { studentId: session.studentId, pageNo: 1, pageSize: 10 },
+        const records = await account.client.get('v1/clubactivity/getStudentClubRecord', {
+          params: { studentId: account.studentId, pageNo: 1, pageSize: 10 },
         });
         if (Array.isArray(records)) clubFrequency = shouldJoinClubToday(records);
       } catch {}
@@ -35,7 +36,7 @@ export async function POST(request) {
 
     let frequency = null;
     try {
-      const records = await client.get('v1/unirun/query/student/all/run/record', { params: { pageNum: 1, pageSize: 10 } });
+      const records = await account.client.get('v1/unirun/query/student/all/run/record', { params: { pageNum: 1, pageSize: 10 } });
       if (Array.isArray(records)) frequency = shouldRunToday(records);
     } catch {}
 

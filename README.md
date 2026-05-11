@@ -1,10 +1,15 @@
 # HappyRun
 
-Unirun 校园跑 & 俱乐部自动化工具。基于逆向分析构建，提供 Web UI 和 CLI 两种使用方式。
+Unirun 校园跑 & 俱乐部自动化工具。基于逆向分析构建，支持**多账号管理**，提供 Web UI 和 CLI 两种使用方式。
 
 > 仅供学习交流使用，请勿用于违反校规的行为。
 
 ## 功能
+
+### 多账号管理
+- 添加/移除多个账号，顶部 pill 一键切换
+- 登录状态通过 Cookie 持久化，重启自动恢复
+- 各账号数据完全隔离（独立 Token、独立 Client）
 
 ### 校园跑
 - 一键提交跑步记录（自动生成合规轨迹）
@@ -17,6 +22,7 @@ Unirun 校园跑 & 俱乐部自动化工具。基于逆向分析构建，提供 
 - 一键报名 / 取消报名
 - 抢报（活动满员时定时高频尝试）
 - 签到 / 签退 / 签到+定时自动签退
+- 定时签到调度（报名后自动设定签到+签退时间）
 
 ### 风控对策
 
@@ -48,24 +54,28 @@ Unirun 校园跑 & 俱乐部自动化工具。基于逆向分析构建，提供 
 ```
 happyrun/
 ├── app/                        # Next.js App Router
-│   ├── page.js                 # 前端页面（React SPA）
+│   ├── page.js                 # 前端页面（多账号 React SPA）
 │   ├── layout.js               # 布局
 │   └── api/                    # API Routes
-│       ├── login/route.js      # 登录
+│       ├── accounts/route.js   # 账号 CRUD（添加/列表/移除）
+│       ├── login/route.js      # 登录（兼容旧接口）
 │       ├── run/route.js        # 校园跑
 │       ├── club/route.js       # 俱乐部 & 签到
 │       ├── routes/route.js     # 路线模板 CRUD
 │       ├── rush/route.js       # 抢报
 │       ├── check/route.js      # 风控检查
-│       └── session.js          # Session 恢复
+│       ├── schedule/route.js   # 定时签到调度
+│       └── session.js          # 多账号 Session 恢复（Cookie 持久化）
 ├── src/
 │   ├── lib/
-│   │   ├── auth.js             # 登录认证 & Token 管理
-│   │   ├── client.js           # HTTP 客户端（自动签名）
+│   │   ├── account-manager.js  # 多账号管理（登录/切换/隔离）
+│   │   ├── auth.js             # 单账号登录（兼容 CLI）
+│   │   ├── client.js           # HTTP 客户端工厂（自动签名）
 │   │   ├── sign.js             # 请求签名算法（MD5）
 │   │   ├── run.js              # 校园跑业务逻辑
 │   │   ├── club.js             # 俱乐部 & 签到
 │   │   ├── rush.js             # 抢报调度
+│   │   ├── schedule.js         # 定时签到调度
 │   │   ├── track-generator.js  # GPS 轨迹生成
 │   │   ├── track-template.js   # 路线模板管理
 │   │   ├── geo.js              # 几何工具
@@ -93,7 +103,7 @@ happyrun/
 ### 安装
 
 ```bash
-git clone https://github.com/yourname/happyrun.git
+git clone https://github.com/ByMi1st/happyrun.git
 cd happyrun
 npm install
 ```
@@ -120,19 +130,23 @@ npm run cli
 
 ## 部署
 
-### Vercel（推荐）
+### 自建服务器（推荐）
+
+> 注意：上游 API 仅限中国大陆 IP 访问，海外服务器（含香港）会被 WAF 拦截返回 405。
 
 ```bash
-npm i -g vercel
-vercel
+npm run build
+npm start
+# 或使用 PM2 守护进程（推荐，自动重启）
+npm install -g pm2
+pm2 start npm --name happyrun -- start
+pm2 save && pm2 startup   # 开机自启
 ```
-
-注意：部署到 Vercel 后需在项目设置中添加环境变量 `APPKEY` 和 `APPSECRET`。
 
 ### Docker
 
 ```dockerfile
-FROM node:18-alpine
+FROM node:20-alpine
 WORKDIR /app
 COPY package*.json ./
 RUN npm install
@@ -140,15 +154,6 @@ COPY . .
 RUN npm run build
 EXPOSE 3000
 CMD ["npm", "start"]
-```
-
-### 自建服务器
-
-```bash
-npm run build
-npm start
-# 或使用 PM2
-pm2 start npm --name happyrun -- start
 ```
 
 ## AI Agent 辅助搭建 Prompt

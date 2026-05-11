@@ -51,11 +51,18 @@ const css = `
 `;
 
 export default function Home() {
-  const [session, setSession] = useState(null);
+  // ===== Multi-account state =====
+  const [accounts, setAccounts] = useState([]);      // list of logged-in accounts
+  const [currentPhone, setCurrentPhone] = useState(null); // active account
+  const session = accounts.find(a => a.phone === currentPhone) || null;
+
+  // ===== Login form =====
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  // ===== UI state =====
   const [tab, setTab] = useState('run');
   const [runResult, setRunResult] = useState(null);
   const [activities, setActivities] = useState([]);
@@ -76,6 +83,7 @@ export default function Home() {
   const [runTime, setRunTime] = useState(0);
   const [riskCheck, setRiskCheck] = useState(null);
   const [clubRisk, setClubRisk] = useState(null);
+  const [showAddAccount, setShowAddAccount] = useState(false);
 
   function showMsg(text, type = 'info', duration = 4000) {
     if (msgTimer.current) clearTimeout(msgTimer.current);
@@ -92,20 +100,50 @@ export default function Home() {
   }
 
   // ===== Auth =====
+  async function loadAccountsList() {
+    try {
+      const data = await api('/api/accounts');
+      setAccounts(data);
+      if (data.length > 0 && !currentPhone) setCurrentPhone(data[0].phone);
+    } catch {}
+  }
+
+  useEffect(() => { loadAccountsList(); }, []);
+
   async function handleLogin(e) {
     e.preventDefault(); setLoading(true); setError('');
     try {
       const data = await api('/api/login', { method: 'POST', body: JSON.stringify({ phone, password }) });
-      setSession(data); setPassword('');
+      setPassword(''); setShowAddAccount(false);
+      await loadAccountsList();
+      setCurrentPhone(data.phone);
     } catch (e) { setError(e.message); }
     setLoading(false);
+  }
+
+  async function handleRemoveAccount(p) {
+    if (!confirm(`确认移除账号 ${p}？`)) return;
+    try {
+      await api(`/api/accounts?phone=${encodeURIComponent(p)}`, { method: 'DELETE' });
+      const remaining = accounts.filter(a => a.phone !== p);
+      setAccounts(remaining);
+      if (currentPhone === p) setCurrentPhone(remaining[0]?.phone || null);
+    } catch (e) { showMsg(e.message, 'error'); }
+  }
+
+  function switchAccount(p) {
+    if (p === currentPhone) return;
+    setCurrentPhone(p);
+    setActivities([]); setMyActs([]); setRunResult(null);
+    setRiskCheck(null); setClubRisk(null); setScheduledTasks([]);
+    setRushStatus([]); setRunLimits(null); setRunDist(0); setRunTime(0);
   }
 
   // ===== Run =====
   async function handleRun() {
     setLoading(true); setRunResult(null);
     try {
-      const data = await api('/api/run', { method: 'POST', body: JSON.stringify({ routeName: selectedRoute || null, distance: runDist, time: runTime }) });
+      const data = await api('/api/run', { method: 'POST', body: JSON.stringify({ phone: currentPhone, routeName: selectedRoute || null, distance: runDist, time: runTime }) });
       setRunResult(data.result);
       showMsg('跑步记录提交成功！', 'success');
     } catch (e) { showMsg(e.message, 'error'); }
@@ -115,7 +153,7 @@ export default function Home() {
   async function loadRoutes() {
     try { const d = await api('/api/routes'); setRoutes(d); } catch {}
     try {
-      const d = await api('/api/run');
+      const d = await api(`/api/run?phone=${encodeURIComponent(currentPhone || '')}`);
       setRunLimits(d.limits);
       const newDist = d.limits.distMin + Math.floor((d.limits.distMax - d.limits.distMin) * 0.3);
       const newTime = d.limits.timeMin + Math.floor((d.limits.timeMax - d.limits.timeMin) * 0.3);
@@ -126,9 +164,9 @@ export default function Home() {
   }
 
   async function checkRisk(d, t) {
-    if (!d || !t) return;
+    if (!d || !t || !currentPhone) return;
     try {
-      const data = await api('/api/check', { method: 'POST', body: JSON.stringify({ distance: d, time: t }) });
+      const data = await api('/api/check', { method: 'POST', body: JSON.stringify({ phone: currentPhone, distance: d, time: t }) });
       setRiskCheck(data);
     } catch {}
   }
@@ -136,18 +174,18 @@ export default function Home() {
   // ===== Club =====
   const loadActivities = useCallback(async (date) => {
     const d = date || selectedDate;
-    try { const data = await api(`/api/club?action=list&date=${d}`); setActivities(data); } catch {}
-  }, [selectedDate]);
+    try { const data = await api(`/api/club?action=list&date=${d}&phone=${encodeURIComponent(currentPhone || '')}`); setActivities(data); } catch {}
+  }, [selectedDate, currentPhone]);
 
   async function loadMyActivities() {
-    try { const data = await api('/api/club?action=mine'); setMyActs(data); } catch {}
+    try { const data = await api(`/api/club?action=mine&phone=${encodeURIComponent(currentPhone || '')}`); setMyActs(data); } catch {}
   }
 
   async function handleClubAction(activity, type) {
     const id = activity.clubActivityId, key = `club-${id}-${type}`;
     setBtnLoad(key, true);
     try {
-      const data = await api('/api/club', { method: 'POST', body: JSON.stringify({ action: type === 'join' ? 'join' : 'cancel', activityId: id }) });
+      const data = await api('/api/club', { method: 'POST', body: JSON.stringify({ phone: currentPhone, action: type === 'join' ? 'join' : 'cancel', activityId: id }) });
       const result = data.result;
       if (result?.status === '0' || result?.status === 0) {
         showMsg(result.message || '操作失败', 'error', 8000);
@@ -171,19 +209,19 @@ export default function Home() {
     if (delayMin === null) return;
     setBtnLoad(`rush-${activity.clubActivityId}`, true);
     try {
-      await api('/api/rush', { method: 'POST', body: JSON.stringify({ activityId: activity.clubActivityId, activityName: activity.activityName, delayMs: Math.max(0, Number(delayMin)) * 60000 }) });
+      await api('/api/rush', { method: 'POST', body: JSON.stringify({ phone: currentPhone, activityId: activity.clubActivityId, activityName: activity.activityName, delayMs: Math.max(0, Number(delayMin)) * 60000 }) });
       showMsg(Number(delayMin) > 0 ? `${delayMin}分钟后开始抢报` : '正在抢报...', 'success');
       await loadRushStatus();
     } catch (e) { showMsg(e.message, 'error'); }
     setBtnLoad(`rush-${activity.clubActivityId}`, false);
   }
 
-  async function loadRushStatus() { try { setRushStatus(await api('/api/rush')); } catch {} }
+  async function loadRushStatus() { try { setRushStatus(await api(`/api/rush?phone=${encodeURIComponent(currentPhone || '')}`)); } catch {} }
 
   async function checkClubRisk() {
     const firstAct = activities[0];
     try {
-      const data = await api('/api/check', { method: 'POST', body: JSON.stringify({ type: 'club', activityStartTime: firstAct?.startTime || '18:00', activityEndTime: firstAct?.endTime || '18:30' }) });
+      const data = await api('/api/check', { method: 'POST', body: JSON.stringify({ phone: currentPhone, type: 'club', activityStartTime: firstAct?.startTime || '18:00', activityEndTime: firstAct?.endTime || '18:30' }) });
       setClubRisk(data);
     } catch {}
   }
@@ -192,7 +230,7 @@ export default function Home() {
   async function handleSign(type) {
     setBtnLoad(`sign-${type}`, true);
     try {
-      const data = await api('/api/club', { method: 'POST', body: JSON.stringify({ action: type === 'in' ? 'signIn' : 'signBack' }) });
+      const data = await api('/api/club', { method: 'POST', body: JSON.stringify({ phone: currentPhone, action: type === 'in' ? 'signIn' : 'signBack' }) });
       const r = data.result;
       if (r.success) showMsg(`${r.type === 'sign_in' ? '签到' : '签退'}成功！${r.activityName}`, 'success');
       else if (r.reason === 'no_activity') showMsg('当前不在活动时间范围内', 'info');
@@ -205,7 +243,7 @@ export default function Home() {
     if (timerActive) return;
     setBtnLoad('sign-timed', true);
     try {
-      const data = await api('/api/club', { method: 'POST', body: JSON.stringify({ action: 'signIn' }) });
+      const data = await api('/api/club', { method: 'POST', body: JSON.stringify({ phone: currentPhone, action: 'signIn' }) });
       if (!data.result.success) { showMsg(data.result.message || '当前不在活动时间范围内', 'info'); setBtnLoad('sign-timed', false); return; }
       showMsg('签到成功！将自动签退', 'success');
       const delay = (22 + Math.floor(Math.random() * 6)) * 60;
@@ -222,7 +260,7 @@ export default function Home() {
 
   async function executeTimedSignBack() {
     try {
-      const data = await api('/api/club', { method: 'POST', body: JSON.stringify({ action: 'signBack' }) });
+      const data = await api('/api/club', { method: 'POST', body: JSON.stringify({ phone: currentPhone, action: 'signBack' }) });
       showMsg(data.result?.success ? '定时签退成功！' : '签退：无需签退或已超时', data.result?.success ? 'success' : 'info');
     } catch (e) { showMsg(`签退失败：${e.message}`, 'error'); }
   }
@@ -231,22 +269,22 @@ export default function Home() {
   async function scheduleActivity(activity) {
     try {
       const mmdd = activity.mmdd || selectedDate.slice(5);
-      const data = await api('/api/schedule', { method: 'POST', body: JSON.stringify({ activity: { ...activity, mmdd } }) });
+      const data = await api('/api/schedule', { method: 'POST', body: JSON.stringify({ phone: currentPhone, activity: { ...activity, mmdd } }) });
       if (data.error) throw new Error(data.error);
       showMsg(`定时签到：${mmdd} ${data.signInTimeStr} → ${data.signBackTimeStr} 签退`, 'success', 6000);
       await loadScheduledTasks();
     } catch (e) { showMsg(e.message, 'error'); }
   }
-  async function loadScheduledTasks() { try { setScheduledTasks(await api('/api/schedule')); } catch {} }
-  async function cancelSchedule(id) { try { await api(`/api/schedule?id=${id}`, { method: 'DELETE' }); showMsg('已取消', 'info'); await loadScheduledTasks(); } catch {} }
+  async function loadScheduledTasks() { try { setScheduledTasks(await api(`/api/schedule?phone=${encodeURIComponent(currentPhone || '')}`)); } catch {} }
+  async function cancelSchedule(id) { try { await api(`/api/schedule?id=${id}&phone=${encodeURIComponent(currentPhone || '')}`, { method: 'DELETE' }); showMsg('已取消', 'info'); await loadScheduledTasks(); } catch {} }
 
   // ===== Effects =====
   useEffect(() => {
-    if (!session) return;
+    if (!currentPhone) return;
     if (tab === 'club') { loadActivities(); loadRushStatus(); checkClubRisk(); loadScheduledTasks(); }
     if (tab === 'mine') { loadMyActivities(); loadScheduledTasks(); }
     if (tab === 'run') loadRoutes();
-  }, [tab, session]);
+  }, [tab, currentPhone, accounts.length]);
 
   useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
 
@@ -271,7 +309,8 @@ export default function Home() {
   const statusLabels = { waiting: '等待签到', signing_in: '签到中...', signed_in: '已签到，待签退', signing_back: '签退中...', completed: '已完成', failed: '签到失败', back_failed: '签退失败' };
 
   // ===== RENDER =====
-  if (!session) {
+  // No accounts at all → show login
+  if (accounts.length === 0) {
     return (
       <>
         <style>{css}</style>
@@ -296,15 +335,65 @@ export default function Home() {
       <style>{css}</style>
       <div style={{ minHeight: '100vh', background: '#F2F2F7', padding: '20px 16px' }}>
         <div style={{ maxWidth: 520, margin: '0 auto' }}>
-          <div className="fade-in" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-            <div>
-              <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700 }}>{session.studentName}</h2>
-              <span style={{ fontSize: 13, color: 'rgba(0,0,0,.4)' }}>{session.schoolName}</span>
+          {/* ===== 账号切换栏 ===== */}
+          <div className="fade-in" style={{ marginBottom: 14 }}>
+            {/* 账号切换 pills */}
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 6 }}>
+              {accounts.map(a => (
+                <button
+                  key={a.phone}
+                  onClick={() => switchAccount(a.phone)}
+                  style={{
+                    padding: '6px 14px', border: 'none', borderRadius: 20, fontSize: 13, fontWeight: 500, cursor: 'pointer', transition: 'all .2s',
+                    background: a.phone === currentPhone ? '#007AFF' : 'rgba(0,0,0,.07)',
+                    color: a.phone === currentPhone ? '#fff' : '#444',
+                  }}
+                >
+                  {a.studentName}
+                  {a.phone === currentPhone && (
+                    <span
+                      onClick={e => { e.stopPropagation(); handleRemoveAccount(a.phone); }}
+                      style={{ marginLeft: 6, opacity: .7, fontSize: 11 }}
+                    >✕</span>
+                  )}
+                </button>
+              ))}
+              <button onClick={() => setShowAddAccount(v => !v)} style={{ padding: '6px 14px', border: '1.5px dashed rgba(0,0,0,.2)', borderRadius: 20, fontSize: 13, color: '#666', background: 'transparent', cursor: 'pointer' }}>+ 添加</button>
             </div>
+            {/* 当前账号信息 */}
+            {session && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div>
+                  <span style={{ fontWeight: 700, fontSize: 18 }}>{session.studentName}</span>
+                  <span style={{ fontSize: 13, color: 'rgba(0,0,0,.4)', marginLeft: 8 }}>{session.schoolName}</span>
+                </div>
+              </div>
+            )}
+            {/* 添加账号表单 */}
+            {showAddAccount && (
+              <div className="slide-up glass" style={{ marginTop: 10, borderRadius: 14, padding: 16, boxShadow: '0 4px 20px rgba(0,0,0,.1)' }}>
+                <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  <input className="input-apple" placeholder="手机号" value={phone} onChange={e => setPhone(e.target.value)} required />
+                  <input className="input-apple" type="password" placeholder="密码" value={password} onChange={e => setPassword(e.target.value)} required />
+                  {error && <p style={{ color: '#FF3B30', fontSize: 13, margin: 0 }}>{error}</p>}
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="btn-primary" style={{ flex: 1 }} disabled={loading}>{loading ? '登录中...' : '登录'}</button>
+                    <button type="button" onClick={() => setShowAddAccount(false)} style={{ padding: '12px 16px', border: 'none', borderRadius: 12, background: 'rgba(0,0,0,.06)', cursor: 'pointer', fontSize: 14 }}>取消</button>
+                  </div>
+                </form>
+              </div>
+            )}
           </div>
+
+          {/* 未选择账号提示 */}
+          {!session && (
+            <div style={{ textAlign: 'center', padding: 40, color: 'rgba(0,0,0,.3)', fontSize: 14 }}>请选择或添加账号</div>
+          )}
 
           {msg && <div className="msg-toast fade-in" style={{ background: msg.type === 'success' ? 'rgba(52,199,89,.12)' : msg.type === 'error' ? 'rgba(255,59,48,.12)' : 'rgba(255,149,0,.12)', color: msg.type === 'success' ? '#248A3D' : msg.type === 'error' ? '#FF3B30' : '#C93400' }}>{msg.text}</div>}
 
+          {/* ===== tabs + content ===== */}
+          {session && (<>
           <div className="tab-bar">
             {['run', 'club', 'mine'].map(t => (
               <button key={t} className={`tab-item ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
@@ -452,6 +541,7 @@ export default function Home() {
               })}
             </div>
           )}
+          </>)}
         </div>
       </div>
     </>

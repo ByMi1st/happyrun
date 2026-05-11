@@ -1,4 +1,6 @@
-import { login, loginByToken, getSession } from '../../../src/lib/auth.js';
+import { loginAccount } from '../../../src/lib/account-manager.js';
+import { setAccountsCookie } from '../session.js';
+import { cookies } from 'next/headers';
 
 export async function POST(request) {
   try {
@@ -6,10 +8,16 @@ export async function POST(request) {
     if (!phone || !password) {
       return Response.json({ error: '请输入手机号和密码' }, { status: 400 });
     }
-    const session = await login(phone, password);
-    const res = Response.json(session);
-    res.headers.set('Set-Cookie', `happyrun_token=${session.token};Path=/;HttpOnly;SameSite=Strict;Max-Age=86400`);
-    return res;
+    const account = await loginAccount(phone, password);
+    const cookieStore = await cookies();
+    await setAccountsCookie(cookieStore);
+    return Response.json({
+      phone: account.phone,
+      studentName: account.studentName,
+      schoolName: account.schoolName,
+      gender: account.gender,
+      loginAt: account.loginAt,
+    });
   } catch (e) {
     return Response.json({ error: e.message }, { status: 401 });
   }
